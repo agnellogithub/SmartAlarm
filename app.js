@@ -1,11 +1,10 @@
 import { Sleep, Vibrator, HeartRate } from '@zos/sensor'
-import { LocalStorage } from '@zos/storage'
 import { set } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
-import { logEvent, formatTimeOfDay } from './utils/index'
+import { logEvent, formatTimeOfDay, storage, readCheckMin } from './utils/index'
 import { cancelExistingAlarm, scheduleNextDayAlarm, recordRing, isRingPending, snoozeAlarm } from './utils/alarm'
 
-const localStorage = new LocalStorage()
+const localStorage = storage
 const SLEEP_RECORD_MAX_AGE_MIN = 15
 const HARD_LIMIT_TOLERANCE_MS = 5 * 1000
 const MIN_ALARM_LEAD_MS = 30 * 1000
@@ -207,12 +206,13 @@ App({
         this.triggerAlarmVibration()
         this.scheduleNextDayAlarm()
       } else {
-        const nextCheckMs = nowMs + 5 * 60 * 1000
+        const checkMin = readCheckMin(localStorage)
+        const nextCheckMs = nowMs + checkMin * 60 * 1000
         const cappedMs = hardLimitMs && hardLimitMs < nextCheckMs ? hardLimitMs : nextCheckMs
         // Never schedule closer than the minimum lead, or the alarm can land in the past and never fire
         const targetTimeMs = Math.max(cappedMs, nowMs + MIN_ALARM_LEAD_MS)
 
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] NON-OPTIMAL STAGE ACTIVE (${stageName}) -> Scheduling next 5-min check for: ${new Date(targetTimeMs).toLocaleString()}`)
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] NON-OPTIMAL STAGE ACTIVE (${stageName}) -> Scheduling next ${checkMin}-min check for: ${new Date(targetTimeMs).toLocaleString()}`)
 
         this.cancelExistingAlarm()
 
@@ -222,7 +222,7 @@ App({
         })
 
         localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] 5-Minute Recurring Alarm Set -> ID: ${alarmId}`)
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Recurring Check Alarm Set -> ID: ${alarmId}`)
         logEvent(localStorage, `next check set for ${formatTimeOfDay(targetTimeMs)} (alarm id ${alarmId})`)
       }
     } catch (e) {
@@ -350,7 +350,7 @@ App({
     try {
       this.globalData.isRinging = false
       if (this.globalData.vibrationTimer) {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Clearing vibration interval timer ID: ${this.globalData.vibrationTimer}`)
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Clearing vibration interval timer.`)
         clearInterval(this.globalData.vibrationTimer)
         this.globalData.vibrationTimer = null
       }

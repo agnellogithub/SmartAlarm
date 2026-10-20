@@ -1,3 +1,13 @@
+import { LocalStorage } from '@zos/storage'
+
+// App and Page each held their own LocalStorage instance and did not see each other's writes
+// (a snooze cleared by the page stayed "pending" in the App). A fresh instance per call always reads current data.
+export const storage = {
+  getItem: key => new LocalStorage().getItem(key),
+  setItem: (key, value) => new LocalStorage().setItem(key, value),
+  removeItem: key => new LocalStorage().removeItem(key)
+}
+
 export function assets(type) {
   return (path) => type + "/" + path;
 }
@@ -78,4 +88,29 @@ export function formatTimeOfDay(ms) {
 export function trace(message) {
   const d = new Date()
   console.log(`[SMART_WAKE_TRACE ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${d.getMilliseconds()}] ${message}`)
+}
+
+export const DEFAULT_SNOOZE_MIN = 10
+export const MIN_SNOOZE_MIN = 1
+export const MAX_SNOOZE_MIN = 30
+
+// Reads the saved snooze length in minutes
+export function readSnoozeMin(localStorage) {
+  const saved = localStorage.getItem('smart_wake_snooze_min')
+  const value = saved !== undefined && saved !== null ? Number(saved) : DEFAULT_SNOOZE_MIN
+  if (Number.isNaN(value)) return DEFAULT_SNOOZE_MIN
+  return Math.min(MAX_SNOOZE_MIN, Math.max(MIN_SNOOZE_MIN, value))
+}
+
+
+export const DEFAULT_CHECK_MIN = 5
+export const MIN_CHECK_MIN = 1
+export const MAX_CHECK_MIN = 15
+
+// Reads the saved interval between sleep checks in minutes
+export function readCheckMin(localStorage) {
+  const saved = localStorage.getItem('smart_wake_check_min')
+  const value = saved !== undefined && saved !== null ? Number(saved) : DEFAULT_CHECK_MIN
+  if (Number.isNaN(value)) return DEFAULT_CHECK_MIN
+  return Math.min(MAX_CHECK_MIN, Math.max(MIN_CHECK_MIN, value))
 }

@@ -1,13 +1,12 @@
 import { createWidget, widget, prop, align } from '@zos/ui'
-import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
 import { Vibrator } from '@zos/sensor'
 import { getDeviceInfo } from '@zos/device'
-import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, logEvent, dumpEventLog } from '../../../utils/index'
+import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, dumpEventLog } from '../../../utils/index'
 import { scheduleNextDayAlarm, snoozeAlarm, isRingPending } from '../../../utils/alarm'
 
-const localStorage = new LocalStorage()
+const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
 const CX = Math.round(DEVICE_WIDTH / 2)
 const CY = Math.round(DEVICE_HEIGHT / 2)
@@ -88,6 +87,10 @@ Page({
     editMinWidget: null,
     windowMin: DEFAULT_WINDOW_MIN,
     editWindowWidget: null,
+    checkMin: DEFAULT_CHECK_MIN,
+    editCheckWidget: null,
+    snoozeMin: DEFAULT_SNOOZE_MIN,
+    editSnoozeWidget: null,
     ringClockWidget: null,
     ringClockTimer: null
   },
@@ -158,34 +161,44 @@ Page({
     this.state.mainGroup = [arrowBtn, this.state.nextTimeWidget, this.state.nextLabelWidget, this.state.mainToggleWidget]
   },
 
-  // --- EDIT SCREEN: hour/minute/window steppers, done ---
+  // --- EDIT SCREEN: scrollable; hour/minute/window/check/snooze steppers, done ---
   buildEditScreen() {
-    const title = createWidget(widget.TEXT, {
-      x: 0, y: CY - 172, w: DEVICE_WIDTH, h: 40,
-      color: COLOR_LABEL, text_size: 22, align_h: align.CENTER_H, align_v: align.CENTER_V,
-      text: 'Wake time'
+    // Scrollable container so all settings fit at full size; children use container-relative coordinates
+    const container = createWidget(widget.VIEW_CONTAINER, {
+      x: 0, y: 0, w: DEVICE_WIDTH, h: DEVICE_HEIGHT,
+      scroll_enable: true
+    })
+
+    const label = (y, text, size = 18) => container.createWidget(widget.TEXT, {
+      x: 0, y, w: DEVICE_WIDTH, h: 30,
+      color: COLOR_LABEL, text_size: size, align_h: align.CENTER_H, align_v: align.CENTER_V,
+      text
     })
 
     const stepper = (y, onMinus, onPlus, minusText, plusText) => {
-      const minus = createWidget(widget.BUTTON, {
+      container.createWidget(widget.BUTTON, {
         x: CX - 145, y, w: 72, h: 56, radius: 28,
         normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
         text: minusText, text_size: 20, click_func: onMinus
       })
-      const value = createWidget(widget.TEXT, {
+      const value = container.createWidget(widget.TEXT, {
         x: CX - 70, y, w: 140, h: 56,
         color: COLOR_TIME, text_size: 40, align_h: align.CENTER_H, align_v: align.CENTER_V,
         text: ''
       })
-      const plus = createWidget(widget.BUTTON, {
+      container.createWidget(widget.BUTTON, {
         x: CX + 73, y, w: 72, h: 56, radius: 28,
         normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
         text: plusText, text_size: 20, click_func: onPlus
       })
-      return [minus, value, plus]
+      return value
     }
 
-    const hourRow = stepper(CY - 128,
+    // Top padding keeps the first row clear of a round screen's edge
+    let y = 50
+    label(y, 'Wake time', 22)
+    y += 40
+    this.state.editHourWidget = stepper(y,
       () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -1h button clicked.`)
         this.state.hour = (this.state.hour + 23) % 24
@@ -197,9 +210,8 @@ Page({
         this.updateEditDisplay()
       },
       '-1h', '+1h')
-    this.state.editHourWidget = hourRow[1]
-
-    const minRow = stepper(CY - 62,
+    y += 66
+    this.state.editMinWidget = stepper(y,
       () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -1m button clicked.`)
         this.state.minute = (this.state.minute + 59) % 60
@@ -211,15 +223,11 @@ Page({
         this.updateEditDisplay()
       },
       '-1m', '+1m')
-    this.state.editMinWidget = minRow[1]
 
-    const windowLabel = createWidget(widget.TEXT, {
-      x: 0, y: CY + 2, w: DEVICE_WIDTH, h: 26,
-      color: COLOR_LABEL, text_size: 18, align_h: align.CENTER_H, align_v: align.CENTER_V,
-      text: 'Smart window (checks before)'
-    })
-
-    const windowRow = stepper(CY + 30,
+    y += 80
+    label(y, 'Smart window (checks before)')
+    y += 34
+    this.state.editWindowWidget = stepper(y,
       () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Window -5m button clicked.`)
         this.state.windowMin = Math.max(MIN_WINDOW_MIN, this.state.windowMin - 5)
@@ -231,10 +239,42 @@ Page({
         this.updateEditDisplay()
       },
       '-5', '+5')
-    this.state.editWindowWidget = windowRow[1]
 
-    const doneBtn = createWidget(widget.BUTTON, {
-      x: CX - 85, y: CY + 100, w: 170, h: 56, radius: 28,
+    y += 80
+    label(y, 'Check every')
+    y += 34
+    this.state.editCheckWidget = stepper(y,
+      () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Check interval -1m button clicked.`)
+        this.state.checkMin = Math.max(MIN_CHECK_MIN, this.state.checkMin - 1)
+        this.updateEditDisplay()
+      },
+      () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Check interval +1m button clicked.`)
+        this.state.checkMin = Math.min(MAX_CHECK_MIN, this.state.checkMin + 1)
+        this.updateEditDisplay()
+      },
+      '-1', '+1')
+
+    y += 80
+    label(y, 'Snooze length')
+    y += 34
+    this.state.editSnoozeWidget = stepper(y,
+      () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Snooze -1m button clicked.`)
+        this.state.snoozeMin = Math.max(MIN_SNOOZE_MIN, this.state.snoozeMin - 1)
+        this.updateEditDisplay()
+      },
+      () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Snooze +1m button clicked.`)
+        this.state.snoozeMin = Math.min(MAX_SNOOZE_MIN, this.state.snoozeMin + 1)
+        this.updateEditDisplay()
+      },
+      '-1', '+1')
+
+    y += 84
+    container.createWidget(widget.BUTTON, {
+      x: CX - 85, y, w: 170, h: 56, radius: 28,
       normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
       text: 'Done', text_size: 24,
       click_func: () => {
@@ -242,8 +282,10 @@ Page({
         this.saveTimeAndReturn()
       }
     })
+    // Bottom spacer so Done can scroll clear of a round screen's edge
+    container.createWidget(widget.FILL_RECT, { x: 0, y: y + 56, w: DEVICE_WIDTH, h: 70, color: 0x000000 })
 
-    this.state.editGroup = [title, ...hourRow, ...minRow, windowLabel, ...windowRow, doneBtn]
+    this.state.editGroup = [container]
   },
 
   // --- RING SCREEN: current time, snooze (red), dismiss (green) ---
@@ -333,6 +375,8 @@ Page({
         this.state.enabled = String(savedEnabled) === 'true'
       }
       this.state.windowMin = readWindowMin(localStorage)
+      this.state.checkMin = readCheckMin(localStorage)
+      this.state.snoozeMin = readSnoozeMin(localStorage)
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] loadSavedConfig exception:`, e)
     }
@@ -350,6 +394,12 @@ Page({
       if (this.state.editWindowWidget) {
         this.state.editWindowWidget.setProperty(prop.TEXT, `${this.state.windowMin} min`)
       }
+      if (this.state.editCheckWidget) {
+        this.state.editCheckWidget.setProperty(prop.TEXT, `${this.state.checkMin} min`)
+      }
+      if (this.state.editSnoozeWidget) {
+        this.state.editSnoozeWidget.setProperty(prop.TEXT, `${this.state.snoozeMin} min`)
+      }
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Edit Display Updated -> ${pad2(this.state.hour)}h ${pad2(this.state.minute)}m, Window: ${this.state.windowMin} min`)
     }
   },
@@ -357,10 +407,12 @@ Page({
   saveTimeAndReturn() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.saveTimeAndReturn()`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Persisting target time -> Hour: ${this.state.hour}, Minute: ${this.state.minute}`)
-    logEvent(localStorage, `settings saved: wake ${this.getFormattedTime()}, window ${this.state.windowMin} min`)
+    logEvent(localStorage, `settings saved: wake ${this.getFormattedTime()}, window ${this.state.windowMin} min, check every ${this.state.checkMin} min, snooze ${this.state.snoozeMin} min`)
     localStorage.setItem('smart_wake_hour', String(this.state.hour))
     localStorage.setItem('smart_wake_minute', String(this.state.minute))
     localStorage.setItem('smart_wake_window_min', String(this.state.windowMin))
+    localStorage.setItem('smart_wake_check_min', String(this.state.checkMin))
+    localStorage.setItem('smart_wake_snooze_min', String(this.state.snoozeMin))
 
     if (this.state.enabled) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm is enabled. Re-scheduling service for new time...`)

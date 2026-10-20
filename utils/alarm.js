@@ -1,10 +1,9 @@
 import { set, cancel } from '@zos/alarm'
-import { getNextWakeWindow, readWindowMin, logEvent, formatTimeOfDay, trace } from './index'
+import { getNextWakeWindow, readWindowMin, readSnoozeMin, logEvent, formatTimeOfDay, trace } from './index'
 
 // Shared by App and Page so the page never depends on reaching App methods through getApp()
 
 export const ALARM_PAGE_URL = 'page/gt/home/index.page'
-export const SNOOZE_MS = 10 * 60 * 1000
 // Snooze is only offered for a ring within this long
 export const SNOOZE_MAX_AGE_MS = 30 * 60 * 1000
 
@@ -96,7 +95,8 @@ export function snoozeAlarm(localStorage) {
     }
 
     // Whole seconds, so the alarm (second precision) can't fire just before the hard limit
-    snoozeUntilMs = Math.ceil((nowMs + SNOOZE_MS) / 1000) * 1000
+    const snoozeMs = readSnoozeMin(localStorage) * 60 * 1000
+    snoozeUntilMs = Math.ceil((nowMs + snoozeMs) / 1000) * 1000
     // If the snooze runs past the hard limit, push the hard limit out to the snooze end too
     const newHardLimitMs = rangHardLimitMs && rangHardLimitMs > snoozeUntilMs ? rangHardLimitMs : snoozeUntilMs
 
