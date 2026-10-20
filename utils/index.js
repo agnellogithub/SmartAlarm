@@ -28,3 +28,48 @@ export function getNextWakeWindow(hour, minute, now = new Date(), windowMin = DE
 
   return { target, windowStart, hardLimit: new Date(target.getTime()) }
 }
+
+// --- Persistent event log (survives app restarts; printed when the page opens) ---
+const EVENT_LOG_KEY = 'smart_wake_event_log'
+const EVENT_LOG_MAX = 200
+
+function pad(n, len = 2) {
+  return String(n).padStart(len, '0')
+}
+
+function readEventLog(localStorage) {
+  try {
+    const raw = localStorage.getItem(EVENT_LOG_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch (e) {
+    return []
+  }
+}
+
+// Appends one timestamped line, keeping only the newest EVENT_LOG_MAX lines
+export function logEvent(localStorage, message) {
+  try {
+    const d = new Date()
+    const stamp = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    const log = readEventLog(localStorage)
+    log.push(`${stamp} ${message}`)
+    if (log.length > EVENT_LOG_MAX) log.splice(0, log.length - EVENT_LOG_MAX)
+    localStorage.setItem(EVENT_LOG_KEY, JSON.stringify(log))
+  } catch (e) {
+    console.log('[SMART_WAKE_EVENT] logEvent failed:', e)
+  }
+}
+
+export function dumpEventLog(localStorage) {
+  const log = readEventLog(localStorage)
+  console.log(`[SMART_WAKE_EVENT] ===== Stored event log (${log.length} entries, oldest first) =====`)
+  log.forEach(line => console.log(`[SMART_WAKE_EVENT] ${line}`))
+  console.log('[SMART_WAKE_EVENT] ===== End of stored event log =====')
+}
+
+// HH:MM:SS for event log messages
+export function formatTimeOfDay(ms) {
+  const d = new Date(Number(ms))
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}

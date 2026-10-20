@@ -3,7 +3,7 @@ import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
 import { getDeviceInfo } from '@zos/device'
-import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN } from '../../../utils/index'
+import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, logEvent, dumpEventLog } from '../../../utils/index'
 
 const localStorage = new LocalStorage()
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -88,6 +88,8 @@ Page({
 
     // An alarm can reopen the page while the App is still running (App.onCreate not called), so check here too
     callApp('evaluateIfDue')
+    // Print the stored history so it shows up whenever the phone's log viewer is open
+    dumpEventLog(localStorage)
 
     this.buildMainScreen()
     this.buildEditScreen()
@@ -346,6 +348,7 @@ Page({
   saveTimeAndReturn() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.saveTimeAndReturn()`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Persisting target time -> Hour: ${this.state.hour}, Minute: ${this.state.minute}`)
+    logEvent(localStorage, `settings saved: wake ${this.getFormattedTime()}, window ${this.state.windowMin} min`)
     localStorage.setItem('smart_wake_hour', String(this.state.hour))
     localStorage.setItem('smart_wake_minute', String(this.state.minute))
     localStorage.setItem('smart_wake_window_min', String(this.state.windowMin))
@@ -361,6 +364,7 @@ Page({
 
   dismissAlarm() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.dismissAlarm()`)
+    logEvent(localStorage, 'dismiss pressed')
     try {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Invoking getApp().stopVibration()...`)
       callApp('stopVibration')
@@ -380,6 +384,7 @@ Page({
 
   snoozeAlarm() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.snoozeAlarm()`)
+    logEvent(localStorage, 'snooze pressed')
     if (!this.state.enabled) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm disabled. Nothing to snooze.`)
       showToast({ text: 'Alarm is off' })
@@ -401,6 +406,7 @@ Page({
 
     this.state.enabled = !this.state.enabled
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] New Alarm State: ${this.state.enabled}`)
+    logEvent(localStorage, `alarm turned ${this.state.enabled ? 'ON' : 'OFF'}`)
     localStorage.setItem('smart_wake_enabled', this.state.enabled ? 'true' : 'false')
 
     if (this.state.enabled) {
@@ -450,6 +456,7 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time  : ${now.toLocaleString()}`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Checks Start Time : ${windowStart.toLocaleString()} (Alarm ID: ${alarmId})`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Target Hard Limit : ${hardLimit.toLocaleString()}`)
+    logEvent(localStorage, `scheduled: checks ${windowStart.toLocaleString()}, target ${formatClock(hardLimit.getTime())} (alarm id ${alarmId})`)
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.scheduleAlarmService()`)
   },

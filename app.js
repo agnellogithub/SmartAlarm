@@ -2,7 +2,7 @@ import { Sleep, Vibrator } from '@zos/sensor'
 import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
-import { getNextWakeWindow, readWindowMin } from './utils/index'
+import { getNextWakeWindow, readWindowMin, logEvent, formatTimeOfDay } from './utils/index'
 
 const localStorage = new LocalStorage()
 const SLEEP_RECORD_MAX_AGE_MIN = 15
@@ -62,8 +62,10 @@ App({
 
     if ((isAlarmLaunch || isInAlarmWindow) && recentlyEvaluated) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Evaluated ${nowMs - lastEvalMs} ms ago -> Skipping duplicate evaluation.`)
+      logEvent(localStorage, `check skipped (duplicate, ${nowMs - lastEvalMs} ms after last)`)
     } else if (isAlarmLaunch || isInAlarmWindow) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm Context Validated -> Invoking runSmartWakeEvaluation()`)
+      logEvent(localStorage, `check start (alarmLaunch=${!!isAlarmLaunch}, inWindow=${!!isInAlarmWindow}, window ${formatTimeOfDay(startMs)}-${formatTimeOfDay(hardLimitMs)})`)
       localStorage.setItem('smart_wake_last_eval_ms', String(nowMs))
       this.runSmartWakeEvaluation()
     } else {
@@ -83,6 +85,7 @@ App({
 
       if (!isEnabled) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Smart Wake is disabled. Aborting evaluation.`)
+        logEvent(localStorage, 'check aborted: alarm disabled')
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.runSmartWakeEvaluation()`)
         return
       }
@@ -96,6 +99,7 @@ App({
       // Tolerance: the alarm may fire a moment before the exact hard limit
       if (hardLimitMs && nowMs >= hardLimitMs - HARD_LIMIT_TOLERANCE_MS) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] HARD LIMIT TRIGGERED (Target Time Reached) -> Executing alarm and rescheduling next day.`)
+        logEvent(localStorage, `RING: hard limit ${formatTimeOfDay(hardLimitMs)} reached`)
         this.sendWakeAlert('Hard Target Limit Reached! Time to wake up!')
         this.triggerAlarmVibration()
         this.recordRing(hardLimitMs)
@@ -165,7 +169,8 @@ App({
               console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Stage Match: UNMAPPED CODE (${lastStage}) -> Optimal Wake = FALSE`)
           }
 
-          // Stage start/stop are minutes from 00:00; ignore records that ended too long ago (e.g. last night's session)
+          // Stage start/stop are minutes from 00:00 of the previous day (e.g. 1945 = 08:25 today, verified on device);
+          // % 1440 gives the time of day. Ignore records that ended too long ago (e.g. last night's session)
           const nowDate = new Date(nowMs)
           const nowMinOfDay = nowDate.getHours() * 60 + nowDate.getMinutes()
           const stopMinOfDay = Number(lastEntry.stop) % 1440
@@ -186,14 +191,17 @@ App({
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ==================== RAW SLEEP DATA DEBUG END ====================`)
       } catch (err) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXCEPTION in Sleep Sensor:`, err)
+        logEvent(localStorage, `sleep sensor error: ${err && err.message ? err.message : err}`)
         stageName = `Sensor Error: ${err.message || err}`
         isOptimalStage = false
       }
 
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Stage Evaluation Result -> Stage Name: "${stageName}", Is Optimal: ${isOptimalStage}`)
+      logEvent(localStorage, `stage: ${stageName}, optimal=${isOptimalStage}`)
 
       if (isOptimalStage) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] OPTIMAL STAGE DETECTED -> Triggering wake alert, motor vibration, and scheduleNextDayAlarm()`)
+        logEvent(localStorage, `RING: optimal stage (${stageName})`)
         this.sendWakeAlert(`Light sleep detected (${stageName})! Good morning!`)
         this.triggerAlarmVibration()
         this.recordRing(hardLimitMs)
@@ -215,9 +223,11 @@ App({
 
         localStorage.setItem('smart_wake_alarm_id', String(alarmId))
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] 5-Minute Recurring Alarm Set -> ID: ${alarmId}`)
+        logEvent(localStorage, `next check set for ${formatTimeOfDay(targetTimeMs)} (alarm id ${alarmId})`)
       }
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] FATAL ERROR in runSmartWakeEvaluation():`, e)
+      logEvent(localStorage, `FATAL in evaluation: ${e && e.message ? e.message : e}`)
     }
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.runSmartWakeEvaluation()`)
@@ -244,6 +254,7 @@ App({
 
       if (!rangAtMs || nowMs - rangAtMs > SNOOZE_MAX_AGE_MS) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] No recent ring found. Nothing to snooze.`)
+        logEvent(localStorage, 'snooze ignored: no recent ring')
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.snoozeAlarm()`)
         return 0
       }
@@ -272,8 +283,10 @@ App({
       localStorage.removeItem('smart_wake_rang_at_ms')
 
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Snoozed -> Next Check: ${new Date(snoozeUntilMs).toLocaleString()} (Alarm ID: ${alarmId}), Hard Limit: ${new Date(newHardLimitMs).toLocaleString()}`)
+      logEvent(localStorage, `snoozed until ${formatTimeOfDay(snoozeUntilMs)}, hard limit ${formatTimeOfDay(newHardLimitMs)} (alarm id ${alarmId})`)
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Snooze exception:`, e)
+      logEvent(localStorage, `snooze error: ${e && e.message ? e.message : e}`)
       snoozeUntilMs = 0
     }
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.snoozeAlarm()`)
@@ -394,8 +407,10 @@ App({
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time          : ${now.toLocaleString()}`)
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Tomorrow's Checks Start Time : ${windowStart.toLocaleString()} (Alarm ID: ${alarmId})`)
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Tomorrow's Target Hard Limit : ${hardLimit.toLocaleString()}`)
+      logEvent(localStorage, `next day scheduled: checks ${windowStart.toLocaleString()}, target ${formatTimeOfDay(hardLimit.getTime())} (alarm id ${alarmId})`)
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Reschedule next day exception:`, e)
+      logEvent(localStorage, `next day schedule error: ${e && e.message ? e.message : e}`)
     }
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.scheduleNextDayAlarm()`)
   },
