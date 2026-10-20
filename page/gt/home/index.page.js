@@ -2,16 +2,15 @@ import { createWidget, widget, prop, align } from '@zos/ui'
 import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
+import { Vibrator } from '@zos/sensor'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, logEvent, dumpEventLog } from '../../../utils/index'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending } from '../../../utils/alarm'
 
 const localStorage = new LocalStorage()
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
 const CX = Math.round(DEVICE_WIDTH / 2)
 const CY = Math.round(DEVICE_HEIGHT / 2)
-
-// Ring screen is shown for a ring this recent that hasn't been snoozed or dismissed (matches App's snooze window)
-const RING_SCREEN_MAX_AGE_MS = 30 * 60 * 1000
 
 const COLOR_ACCENT = 0x6c5ce7
 const COLOR_ACCENT_PRESS = 0xa29bfe
@@ -43,8 +42,10 @@ function callApp(method) {
       return target[method]()
     }
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] callApp: method "${method}" not found on app instance`)
+    logEvent(localStorage, `callApp: ${method} not found on app instance`)
   } catch (e) {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] callApp(${method}) exception:`, e)
+    logEvent(localStorage, `callApp(${method}) error: ${e && e.message ? e.message : e}`)
   }
   return undefined
 }
@@ -56,6 +57,15 @@ function pad2(n) {
 function formatClock(ms) {
   const d = new Date(Number(ms))
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+// Stops the motor from the page itself; the App's vibration loop also stops once the ring is cleared
+function stopMotor() {
+  try {
+    new Vibrator().stop()
+  } catch (e) {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] stopMotor exception:`, e)
+  }
 }
 
 function setGroupVisible(group, visible) {
@@ -191,16 +201,16 @@ Page({
 
     const minRow = stepper(CY - 62,
       () => {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -5m button clicked.`)
-        this.state.minute = (this.state.minute + 55) % 60
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -1m button clicked.`)
+        this.state.minute = (this.state.minute + 59) % 60
         this.updateEditDisplay()
       },
       () => {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: +5m button clicked.`)
-        this.state.minute = (this.state.minute + 5) % 60
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: +1m button clicked.`)
+        this.state.minute = (this.state.minute + 1) % 60
         this.updateEditDisplay()
       },
-      '-5m', '+5m')
+      '-1m', '+1m')
     this.state.editMinWidget = minRow[1]
 
     const windowLabel = createWidget(widget.TEXT, {
@@ -288,9 +298,8 @@ Page({
   },
 
   isRingActive() {
-    const rangAtMs = Number(localStorage.getItem('smart_wake_rang_at_ms'))
-    const active = !!rangAtMs && Date.now() - rangAtMs <= RING_SCREEN_MAX_AGE_MS
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Ring Active Check -> Rang At: ${rangAtMs || 'N/A'}, Active: ${active}`)
+    const active = isRingPending(localStorage)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Ring Active Check -> Active: ${active}`)
     return active
   },
 
@@ -367,14 +376,14 @@ Page({
     logEvent(localStorage, 'dismiss pressed')
     try {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Invoking getApp().stopVibration()...`)
-      callApp('stopVibration')
+      stopMotor()
       // A dismissed ring can no longer be snoozed
       localStorage.removeItem('smart_wake_rang_at_ms')
 
       // EXPLICIT CHECK: If alarm is actively enabled, ensure tomorrow's alarm is locked in
       if (this.state.enabled) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm is active -> Invoking getApp().scheduleNextDayAlarm() from dismiss action...`)
-        callApp('scheduleNextDayAlarm')
+        scheduleNextDayAlarm(localStorage)
       }
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] dismissAlarm exception:`, e)
@@ -389,7 +398,7 @@ Page({
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm disabled. Nothing to snooze.`)
       showToast({ text: 'Alarm is off' })
     } else {
-      const snoozeUntilMs = callApp('snoozeAlarm')
+      const snoozeUntilMs = snoozeAlarm(localStorage)
       if (snoozeUntilMs) {
         showToast({ text: `Snoozed until ${formatClock(snoozeUntilMs)}` })
       } else {
@@ -402,7 +411,7 @@ Page({
 
   toggleAlarm() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.toggleAlarm()`)
-    callApp('stopVibration')
+    stopMotor()
 
     this.state.enabled = !this.state.enabled
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] New Alarm State: ${this.state.enabled}`)
@@ -465,7 +474,7 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.cancelAlarmService()`)
     try {
       // Only stop the motor here; dismissAlarm() would schedule a new alarm while we cancel
-      callApp('stopVibration')
+      stopMotor()
 
       const activeAlarmId = localStorage.getItem('smart_wake_alarm_id')
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Active Alarm ID read from storage: ${activeAlarmId}`)

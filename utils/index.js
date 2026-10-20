@@ -73,3 +73,9 @@ export function formatTimeOfDay(ms) {
   const d = new Date(Number(ms))
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+// Same [SMART_WAKE_TRACE hh:mm:ss.ms] prefix the App and Page use
+export function trace(message) {
+  const d = new Date()
+  console.log(`[SMART_WAKE_TRACE ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${d.getMilliseconds()}] ${message}`)
+}

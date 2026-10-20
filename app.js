@@ -1,14 +1,12 @@
-import { Sleep, Vibrator } from '@zos/sensor'
+import { Sleep, Vibrator, HeartRate } from '@zos/sensor'
 import { LocalStorage } from '@zos/storage'
-import { set, cancel } from '@zos/alarm'
+import { set } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
-import { getNextWakeWindow, readWindowMin, logEvent, formatTimeOfDay } from './utils/index'
+import { logEvent, formatTimeOfDay } from './utils/index'
+import { cancelExistingAlarm, scheduleNextDayAlarm, recordRing, isRingPending, snoozeAlarm } from './utils/alarm'
 
 const localStorage = new LocalStorage()
 const SLEEP_RECORD_MAX_AGE_MIN = 15
-const SNOOZE_MS = 10 * 60 * 1000
-// Snooze is only offered for a ring within this long
-const SNOOZE_MAX_AGE_MS = 30 * 60 * 1000
 const HARD_LIMIT_TOLERANCE_MS = 5 * 1000
 const MIN_ALARM_LEAD_MS = 30 * 1000
 // Must stay below MIN_ALARM_LEAD_MS so a real follow-up check is never skipped
@@ -101,8 +99,8 @@ App({
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] HARD LIMIT TRIGGERED (Target Time Reached) -> Executing alarm and rescheduling next day.`)
         logEvent(localStorage, `RING: hard limit ${formatTimeOfDay(hardLimitMs)} reached`)
         this.sendWakeAlert('Hard Target Limit Reached! Time to wake up!')
-        this.triggerAlarmVibration()
         this.recordRing(hardLimitMs)
+        this.triggerAlarmVibration()
         this.scheduleNextDayAlarm()
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.runSmartWakeEvaluation()`)
         return
@@ -120,6 +118,8 @@ App({
 
         const stages = sleep.getStage()
         const constants = sleep.getStageConstantObj()
+
+        this.probeLiveSignals(sleep)
 
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ==================== RAW SLEEP DATA DEBUG START ====================`)
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Stage Constants:`, JSON.stringify(constants))
@@ -203,8 +203,8 @@ App({
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] OPTIMAL STAGE DETECTED -> Triggering wake alert, motor vibration, and scheduleNextDayAlarm()`)
         logEvent(localStorage, `RING: optimal stage (${stageName})`)
         this.sendWakeAlert(`Light sleep detected (${stageName})! Good morning!`)
-        this.triggerAlarmVibration()
         this.recordRing(hardLimitMs)
+        this.triggerAlarmVibration()
         this.scheduleNextDayAlarm()
       } else {
         const nextCheckMs = nowMs + 5 * 60 * 1000
@@ -233,64 +233,72 @@ App({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.runSmartWakeEvaluation()`)
   },
 
-  // Remembers the ring so snoozeAlarm() can restore today's window after the next-day rollover
+  // Diagnostic: records every live signal the sensors expose, to learn whether anything updates during sleep
+  probeLiveSignals(sleep) {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.probeLiveSignals()`)
+    const summary = []
+    const safe = (label, fn) => {
+      try {
+        const value = fn()
+        const text = JSON.stringify(value)
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE ${label}:`, text)
+        return text
+      } catch (e) {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE ${label} threw:`, e)
+        return `ERR(${e && e.message ? e.message : e})`
+      }
+    }
+    const short = (text, max = 120) => (text && text.length > max ? `${text.slice(0, max)}...` : text)
+
+    // Sleep: list every method, then call the ones that take no arguments
+    const sleepMethods = []
+    try {
+      let proto = Object.getPrototypeOf(sleep)
+      while (proto && proto !== Object.prototype) {
+        Object.getOwnPropertyNames(proto).forEach(n => {
+          if (n !== 'constructor' && typeof sleep[n] === 'function' && !sleepMethods.includes(n)) sleepMethods.push(n)
+        })
+        proto = Object.getPrototypeOf(proto)
+      }
+    } catch (e) {
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE sleep method listing threw:`, e)
+    }
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE Sleep methods: ${sleepMethods.join(', ')}`)
+    summary.push(`sleepMethods=[${sleepMethods.join(',')}]`)
+
+    const skip = ['updateInfo', 'getStage', 'getStageConstantObj', 'onChange', 'offChange']
+    sleepMethods
+      .filter(n => n.startsWith('get') && !skip.includes(n))
+      .forEach(n => summary.push(`${n}=${short(safe(`sleep.${n}()`, () => sleep[n]()))}`))
+
+    // Heart rate: current/last reading and the most recent per-minute history
+    try {
+      const hr = new HeartRate()
+      summary.push(`hrCurrent=${safe('hr.getCurrent()', () => hr.getCurrent())}`)
+      summary.push(`hrLast=${safe('hr.getLast()', () => hr.getLast())}`)
+      const todayText = safe('hr.getToday() (last 15)', () => {
+        const today = hr.getToday()
+        return Array.isArray(today) ? { length: today.length, last15: today.slice(-15) } : today
+      })
+      summary.push(`hrToday=${short(todayText, 160)}`)
+    } catch (e) {
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE HeartRate threw:`, e)
+      summary.push(`hr=ERR(${e && e.message ? e.message : e})`)
+    }
+
+    // Capped so 200 stored entries stay small
+    logEvent(localStorage, `probe: ${short(summary.join(' | '), 500)}`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.probeLiveSignals()`)
+  },
+
   recordRing(hardLimitMs) {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.recordRing() | Hard Limit: ${hardLimitMs ? new Date(hardLimitMs).toLocaleString() : 'N/A'}`)
-    localStorage.setItem('smart_wake_rang_at_ms', String(Date.now()))
-    localStorage.setItem('smart_wake_rang_hard_limit_ms', String(hardLimitMs || Date.now()))
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.recordRing()`)
+    recordRing(localStorage, hardLimitMs)
   },
 
   // Returns the snooze end time in ms, or 0 if there is no recent ring to snooze
   snoozeAlarm() {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.snoozeAlarm()`)
-    let snoozeUntilMs = 0
-    try {
-      const nowMs = Date.now()
-      const rangAtMs = Number(localStorage.getItem('smart_wake_rang_at_ms'))
-      const rangHardLimitMs = Number(localStorage.getItem('smart_wake_rang_hard_limit_ms'))
-
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Snooze Check -> Rang At: ${rangAtMs ? new Date(rangAtMs).toLocaleString() : 'N/A'}, Rang Hard Limit: ${rangHardLimitMs ? new Date(rangHardLimitMs).toLocaleString() : 'N/A'}`)
-
-      if (!rangAtMs || nowMs - rangAtMs > SNOOZE_MAX_AGE_MS) {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] No recent ring found. Nothing to snooze.`)
-        logEvent(localStorage, 'snooze ignored: no recent ring')
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.snoozeAlarm()`)
-        return 0
-      }
-
-      this.stopVibration()
-
-      // Whole seconds, so the alarm (second precision) can't fire just before the hard limit
-      snoozeUntilMs = Math.ceil((nowMs + SNOOZE_MS) / 1000) * 1000
-      // If the snooze runs past the hard limit, push the hard limit out to the snooze end too
-      const newHardLimitMs = rangHardLimitMs && rangHardLimitMs > snoozeUntilMs ? rangHardLimitMs : snoozeUntilMs
-
-      // Restore today's window (scheduleNextDayAlarm() already moved it to tomorrow)
-      localStorage.setItem('smart_wake_start_ms', String(nowMs))
-      localStorage.setItem('smart_wake_hard_limit_ms', String(newHardLimitMs))
-      localStorage.setItem('smart_wake_target_ms', String(newHardLimitMs))
-      localStorage.setItem('smart_wake_snooze_until_ms', String(snoozeUntilMs))
-
-      this.cancelExistingAlarm()
-
-      const alarmId = set({
-        url: 'page/gt/home/index.page',
-        time: Math.floor(snoozeUntilMs / 1000)
-      })
-
-      localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-      localStorage.removeItem('smart_wake_rang_at_ms')
-
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Snoozed -> Next Check: ${new Date(snoozeUntilMs).toLocaleString()} (Alarm ID: ${alarmId}), Hard Limit: ${new Date(newHardLimitMs).toLocaleString()}`)
-      logEvent(localStorage, `snoozed until ${formatTimeOfDay(snoozeUntilMs)}, hard limit ${formatTimeOfDay(newHardLimitMs)} (alarm id ${alarmId})`)
-    } catch (e) {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Snooze exception:`, e)
-      logEvent(localStorage, `snooze error: ${e && e.message ? e.message : e}`)
-      snoozeUntilMs = 0
-    }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.snoozeAlarm()`)
-    return snoozeUntilMs
+    this.stopVibration()
+    return snoozeAlarm(localStorage)
   },
 
   sendWakeAlert(message) {
@@ -320,7 +328,10 @@ App({
       let count = 0
       this.globalData.vibrationTimer = setInterval(() => {
         count++
-        if (count >= 6) {
+        if (!isRingPending(localStorage)) {
+          console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Ring was snoozed or dismissed. Invoking stopVibration()`)
+          this.stopVibration()
+        } else if (count >= 6) {
           console.log(`[SMART_WAKE_TRACE ${getLogTime()}] 30-second vibration duration completed. Invoking stopVibration()`)
           this.stopVibration()
         } else if (this.globalData.isRinging) {
@@ -356,63 +367,11 @@ App({
   },
 
   cancelExistingAlarm() {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.cancelExistingAlarm()`)
-    try {
-      const activeAlarmId = localStorage.getItem('smart_wake_alarm_id')
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Reading active alarm ID from LocalStorage: ${activeAlarmId}`)
-      if (activeAlarmId) {
-        cancel(Number(activeAlarmId))
-        localStorage.removeItem('smart_wake_alarm_id')
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm ID ${activeAlarmId} successfully cancelled and removed from storage.`)
-      } else {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] No active alarm ID found in storage. Nothing to cancel.`)
-      }
-    } catch (e) {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Cancel alarm exception:`, e)
-    }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.cancelExistingAlarm()`)
+    cancelExistingAlarm(localStorage)
   },
 
   scheduleNextDayAlarm() {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.scheduleNextDayAlarm()`)
-    try {
-      // Default only when unset, so a saved midnight hour (0) is kept
-      const savedHour = localStorage.getItem('smart_wake_hour')
-      const savedMin = localStorage.getItem('smart_wake_minute')
-      const targetHour = savedHour !== undefined && savedHour !== null ? Number(savedHour) : 7
-      const targetMin = savedMin !== undefined && savedMin !== null ? Number(savedMin) : 0
-
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Target config loaded -> Hour: ${targetHour}, Minute: ${targetMin}`)
-
-      // Next occurrence whose window has not started (avoids skipping a day when dismissed the evening before)
-      const now = new Date()
-      const { target: tomorrowTarget, windowStart, hardLimit } = getNextWakeWindow(targetHour, targetMin, now, readWindowMin(localStorage))
-
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Storing millisecond values into LocalStorage...`)
-      localStorage.setItem('smart_wake_target_ms', String(tomorrowTarget.getTime()))
-      localStorage.setItem('smart_wake_start_ms', String(windowStart.getTime()))
-      localStorage.setItem('smart_wake_hard_limit_ms', String(hardLimit.getTime()))
-      localStorage.removeItem('smart_wake_snooze_until_ms')
-
-      this.cancelExistingAlarm()
-
-      const alarmId = set({
-        url: 'page/gt/home/index.page',
-        time: Math.floor(windowStart.getTime() / 1000)
-      })
-
-      localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] === NEXT DAY ROLLOVER SUCCESS ===`)
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time          : ${now.toLocaleString()}`)
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Tomorrow's Checks Start Time : ${windowStart.toLocaleString()} (Alarm ID: ${alarmId})`)
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Tomorrow's Target Hard Limit : ${hardLimit.toLocaleString()}`)
-      logEvent(localStorage, `next day scheduled: checks ${windowStart.toLocaleString()}, target ${formatTimeOfDay(hardLimit.getTime())} (alarm id ${alarmId})`)
-    } catch (e) {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Reschedule next day exception:`, e)
-      logEvent(localStorage, `next day schedule error: ${e && e.message ? e.message : e}`)
-    }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.scheduleNextDayAlarm()`)
+    scheduleNextDayAlarm(localStorage)
   },
 
   onDestroy() {
