@@ -53,6 +53,7 @@ export function scheduleNextDayAlarm(localStorage) {
     })
 
     localStorage.setItem('smart_wake_alarm_id', String(alarmId))
+    localStorage.setItem('smart_wake_next_alarm_ms', String(windowStart.getTime()))
 
     trace(`=== NEXT DAY ROLLOVER SUCCESS === Checks Start: ${windowStart.toLocaleString()} (Alarm ID: ${alarmId}), Target Hard Limit: ${hardLimit.toLocaleString()}`)
     logEvent(localStorage, `next day scheduled: checks ${windowStart.toLocaleString()}, target ${formatTimeOfDay(hardLimit.getTime())} (alarm id ${alarmId})`)
@@ -114,6 +115,7 @@ export function snoozeAlarm(localStorage) {
     })
 
     localStorage.setItem('smart_wake_alarm_id', String(alarmId))
+    localStorage.setItem('smart_wake_next_alarm_ms', String(snoozeUntilMs))
     // Clearing the pending ring also stops the App's vibration loop
     localStorage.removeItem('smart_wake_rang_at_ms')
 

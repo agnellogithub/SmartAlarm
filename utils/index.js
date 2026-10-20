@@ -41,7 +41,8 @@ export function getNextWakeWindow(hour, minute, now = new Date(), windowMin = DE
 
 // --- Persistent event log (survives app restarts; printed when the page opens) ---
 const EVENT_LOG_KEY = 'smart_wake_event_log'
-const EVENT_LOG_MAX = 200
+// As many lines as storage reliably holds; trimmed further if a write fails
+const EVENT_LOG_MAX = 1000
 
 function pad(n, len = 2) {
   return String(n).padStart(len, '0')
@@ -65,7 +66,23 @@ export function logEvent(localStorage, message) {
     const log = readEventLog(localStorage)
     log.push(`${stamp} ${message}`)
     if (log.length > EVENT_LOG_MAX) log.splice(0, log.length - EVENT_LOG_MAX)
-    localStorage.setItem(EVENT_LOG_KEY, JSON.stringify(log))
+    try {
+      localStorage.setItem(EVENT_LOG_KEY, JSON.stringify(log))
+    } catch (writeErr) {
+      // Storage full: keep halving (newest lines kept) until the write succeeds
+      let kept = log
+      while (kept.length > 1) {
+        kept = kept.slice(Math.floor(kept.length / 2))
+        const trimmed = kept.concat(`${stamp} log trimmed to ${kept.length} lines after write failure`)
+        try {
+          localStorage.setItem(EVENT_LOG_KEY, JSON.stringify(trimmed))
+          return
+        } catch (retryErr) {
+          // still too large, halve again
+        }
+      }
+      throw writeErr
+    }
   } catch (e) {
     console.log('[SMART_WAKE_EVENT] logEvent failed:', e)
   }

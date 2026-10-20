@@ -108,7 +108,9 @@ Page({
     this.buildEditScreen()
     this.buildRingScreen()
 
-    this.showScreen(this.isRingActive() ? 'ring' : 'main')
+    const firstScreen = this.isRingActive() ? 'ring' : 'main'
+    logEvent(localStorage, `page opened on ${firstScreen} screen`)
+    this.showScreen(firstScreen)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.build()`)
   },
 
@@ -512,6 +514,7 @@ Page({
     })
 
     localStorage.setItem('smart_wake_alarm_id', String(alarmId))
+    localStorage.setItem('smart_wake_next_alarm_ms', String(startSeconds * 1000))
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] === MANUAL SCHEDULE VERIFICATION ===`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time  : ${now.toLocaleString()}`)

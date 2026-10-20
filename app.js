@@ -62,7 +62,11 @@ App({
       logEvent(localStorage, `check skipped (duplicate, ${nowMs - lastEvalMs} ms after last)`)
     } else if (isAlarmLaunch || isInAlarmWindow) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm Context Validated -> Invoking runSmartWakeEvaluation()`)
-      logEvent(localStorage, `check start (alarmLaunch=${!!isAlarmLaunch}, inWindow=${!!isInAlarmWindow}, window ${formatTimeOfDay(startMs)}-${formatTimeOfDay(hardLimitMs)})`)
+      const dueMs = Number(localStorage.getItem('smart_wake_next_alarm_ms'))
+      const lateSec = dueMs ? Math.round((nowMs - dueMs) / 1000) : null
+      // Far from the scheduled time means the app was opened by hand, not by the alarm
+      const onSchedule = lateSec !== null && lateSec >= -5 && lateSec <= 600
+      logEvent(localStorage, `check start: due ${dueMs ? formatTimeOfDay(dueMs) : 'n/a'}, ${lateSec === null ? 'no scheduled alarm' : `${lateSec}s late`}${onSchedule ? '' : ' (opened by hand?)'}, target ${formatTimeOfDay(hardLimitMs)}`)
       localStorage.setItem('smart_wake_last_eval_ms', String(nowMs))
       this.runSmartWakeEvaluation()
     } else {
@@ -122,20 +126,9 @@ App({
 
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ==================== RAW SLEEP DATA DEBUG START ====================`)
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Stage Constants:`, JSON.stringify(constants))
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Raw getStage() Dump:`, JSON.stringify(stages))
 
         if (stages && Array.isArray(stages) && stages.length > 0) {
           console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Total Sleep Records Returned: ${stages.length}`)
-
-          stages.forEach((st, idx) => {
-            let mappedName = 'UNKNOWN'
-            if (st.model === constants.LIGHT_STAGE) mappedName = 'LIGHT_SLEEP'
-            else if (st.model === constants.WAKE_STAGE) mappedName = 'WAKE'
-            else if (st.model === constants.DEEP_STAGE) mappedName = 'DEEP_SLEEP'
-            else if (st.model === constants.REM_STAGE) mappedName = 'REM_SLEEP'
-
-            console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Record [${idx + 1}/${stages.length}] -> Code: ${st.model} (${mappedName}), Start: ${st.start}, Stop: ${st.stop}, Full Record:`, JSON.stringify(st))
-          })
 
           const lastEntry = stages[stages.length - 1]
           const lastStage = lastEntry.model
@@ -222,6 +215,7 @@ App({
         })
 
         localStorage.setItem('smart_wake_alarm_id', String(alarmId))
+        localStorage.setItem('smart_wake_next_alarm_ms', String(Math.floor(targetTimeMs / 1000) * 1000))
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Recurring Check Alarm Set -> ID: ${alarmId}`)
         logEvent(localStorage, `next check set for ${formatTimeOfDay(targetTimeMs)} (alarm id ${alarmId})`)
       }
@@ -233,62 +227,39 @@ App({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.runSmartWakeEvaluation()`)
   },
 
-  // Diagnostic: records every live signal the sensors expose, to learn whether anything updates during sleep
+  // Diagnostic, one line per check: does anything change live while asleep?
   probeLiveSignals(sleep) {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.probeLiveSignals()`)
-    const summary = []
-    const safe = (label, fn) => {
+    const parts = []
+    const read = (label, fn) => {
       try {
-        const value = fn()
-        const text = JSON.stringify(value)
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE ${label}:`, text)
-        return text
+        parts.push(`${label}=${fn()}`)
       } catch (e) {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE ${label} threw:`, e)
-        return `ERR(${e && e.message ? e.message : e})`
+        parts.push(`${label}=ERR(${e && e.message ? e.message : e})`)
       }
     }
-    const short = (text, max = 120) => (text && text.length > max ? `${text.slice(0, max)}...` : text)
-
-    // Sleep: list every method, then call the ones that take no arguments
-    const sleepMethods = []
-    try {
-      let proto = Object.getPrototypeOf(sleep)
-      while (proto && proto !== Object.prototype) {
-        Object.getOwnPropertyNames(proto).forEach(n => {
-          if (n !== 'constructor' && typeof sleep[n] === 'function' && !sleepMethods.includes(n)) sleepMethods.push(n)
-        })
-        proto = Object.getPrototypeOf(proto)
-      }
-    } catch (e) {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE sleep method listing threw:`, e)
-    }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE Sleep methods: ${sleepMethods.join(', ')}`)
-    summary.push(`sleepMethods=[${sleepMethods.join(',')}]`)
-
-    const skip = ['updateInfo', 'getStage', 'getStageConstantObj', 'onChange', 'offChange']
-    sleepMethods
-      .filter(n => n.startsWith('get') && !skip.includes(n))
-      .forEach(n => summary.push(`${n}=${short(safe(`sleep.${n}()`, () => sleep[n]()))}`))
-
-    // Heart rate: current/last reading and the most recent per-minute history
+    read('sleeping', () => sleep.getSleepingStatus())
+    read('stages', () => {
+      const stages = sleep.getStage() || []
+      const last = stages[stages.length - 1]
+      return last ? `${stages.length} last=${last.model}@${last.start}-${last.stop}` : '0'
+    })
+    read('info', () => {
+      const info = sleep.getInfo() || {}
+      return `${info.startTime}-${info.endTime}`
+    })
     try {
       const hr = new HeartRate()
-      summary.push(`hrCurrent=${safe('hr.getCurrent()', () => hr.getCurrent())}`)
-      summary.push(`hrLast=${safe('hr.getLast()', () => hr.getLast())}`)
-      const todayText = safe('hr.getToday() (last 15)', () => {
-        const today = hr.getToday()
-        return Array.isArray(today) ? { length: today.length, last15: today.slice(-15) } : today
+      read('hrLast', () => hr.getLast())
+      read('hrToday', () => {
+        const today = hr.getToday() || []
+        return `${today.length}:[${today.slice(-5).join(',')}]`
       })
-      summary.push(`hrToday=${short(todayText, 160)}`)
     } catch (e) {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] PROBE HeartRate threw:`, e)
-      summary.push(`hr=ERR(${e && e.message ? e.message : e})`)
+      parts.push(`hr=ERR(${e && e.message ? e.message : e})`)
     }
-
-    // Capped so 200 stored entries stay small
-    logEvent(localStorage, `probe: ${short(summary.join(' | '), 500)}`)
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.probeLiveSignals()`)
+    const line = `probe: ${parts.join(' ')}`
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ${line}`)
+    logEvent(localStorage, line)
   },
 
   recordRing(hardLimitMs) {
@@ -330,9 +301,11 @@ App({
         count++
         if (!isRingPending(localStorage)) {
           console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Ring was snoozed or dismissed. Invoking stopVibration()`)
+          logEvent(localStorage, 'vibration stopped: ring snoozed/dismissed')
           this.stopVibration()
         } else if (count >= 6) {
           console.log(`[SMART_WAKE_TRACE ${getLogTime()}] 30-second vibration duration completed. Invoking stopVibration()`)
+          logEvent(localStorage, 'vibration stopped: 30s finished')
           this.stopVibration()
         } else if (this.globalData.isRinging) {
           console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Vibration Interval Executing -> Pulse ${count + 1}/6`)
