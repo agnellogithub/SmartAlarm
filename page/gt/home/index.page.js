@@ -1,8 +1,29 @@
 import { createWidget, widget, prop, align } from '@zos/ui'
 import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
+import { showToast } from '@zos/interaction'
+import { getDeviceInfo } from '@zos/device'
+import { getNextWakeWindow } from '../../../utils/index'
 
 const localStorage = new LocalStorage()
+const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
+const CX = Math.round(DEVICE_WIDTH / 2)
+const CY = Math.round(DEVICE_HEIGHT / 2)
+
+// Ring screen is shown for a ring this recent that hasn't been snoozed or dismissed (matches App's snooze window)
+const RING_SCREEN_MAX_AGE_MS = 30 * 60 * 1000
+
+const COLOR_ACCENT = 0x6c5ce7
+const COLOR_ACCENT_PRESS = 0xa29bfe
+const COLOR_TIME = 0xffffff
+const COLOR_TIME_OFF = 0x636e72
+const COLOR_LABEL = 0xb2bec3
+const COLOR_RED = 0xd63031
+const COLOR_RED_PRESS = 0xff7675
+const COLOR_GREEN = 0x00b894
+const COLOR_GREEN_PRESS = 0x55efc4
+const COLOR_GREY = 0x2d3436
+const COLOR_GREY_PRESS = 0x636e72
 
 function getLogTime() {
   const d = new Date()
@@ -13,153 +34,255 @@ function getLogTime() {
   return `${h}:${m}:${s}.${ms}`
 }
 
+// App methods may live on getApp() or getApp()._options depending on the runtime
+function callApp(method) {
+  try {
+    const app = getApp()
+    const target = app && typeof app[method] === 'function' ? app : app && app._options
+    if (target && typeof target[method] === 'function') {
+      return target[method]()
+    }
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] callApp: method "${method}" not found on app instance`)
+  } catch (e) {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] callApp(${method}) exception:`, e)
+  }
+  return undefined
+}
+
+function pad2(n) {
+  return n < 10 ? `0${n}` : `${n}`
+}
+
+function formatClock(ms) {
+  const d = new Date(Number(ms))
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+function setGroupVisible(group, visible) {
+  group.forEach(w => w.setProperty(prop.VISIBLE, visible))
+}
+
 Page({
   state: {
     hour: 7,
     minute: 0,
     enabled: false,
-    editing: false,
+    screen: 'main',
     mainGroup: [],
     editGroup: [],
-    timeTextWidget: null,
-    statusTextWidget: null,
-    toggleBtnWidget: null,
-    editBtnWidget: null,
+    ringGroup: [],
+    nextTimeWidget: null,
+    nextLabelWidget: null,
     editHourWidget: null,
     editMinWidget: null,
-    dismissBtnWidget: null
+    editToggleWidget: null,
+    ringClockWidget: null,
+    ringClockTimer: null
   },
 
   build() {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.build()`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.build() | Screen: ${DEVICE_WIDTH}x${DEVICE_HEIGHT}`)
     this.loadSavedConfig()
 
-    // --- MAIN DISPLAY UI ---
-    const titleWidget = createWidget(widget.TEXT, {
-      x: 20, y: 45, w: 350, h: 30,
-      color: 0x8e44ad, text_size: 20, align_h: align.CENTER_H,
-      text: 'Smart Wake (-25m Window)'
-    })
-    this.state.mainGroup.push(titleWidget)
+    this.buildMainScreen()
+    this.buildEditScreen()
+    this.buildRingScreen()
 
-    this.state.timeTextWidget = createWidget(widget.TEXT, {
-      x: 20, y: 80, w: 350, h: 65,
-      color: 0x00cec9, text_size: 52, align_h: align.CENTER_H,
+    this.showScreen(this.isRingActive() ? 'ring' : 'main')
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.build()`)
+  },
+
+  onDestroy() {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.onDestroy()`)
+    this.stopRingClock()
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.onDestroy()`)
+  },
+
+  // --- MAIN SCREEN: edit arrow + next alarm time ---
+  buildMainScreen() {
+    const arrowSize = 64
+    const timeW = 210
+    const left = CX - Math.round((arrowSize + 12 + timeW) / 2)
+
+    const arrowBtn = createWidget(widget.BUTTON, {
+      x: left, y: CY - 52, w: arrowSize, h: arrowSize,
+      normal_src: 'image/edit_arrow.png',
+      press_src: 'image/edit_arrow_press.png',
+      click_func: () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Edit arrow clicked.`)
+        this.showScreen('edit')
+      }
+    })
+
+    this.state.nextTimeWidget = createWidget(widget.TEXT, {
+      x: left + arrowSize + 12, y: CY - 64, w: timeW, h: 88,
+      color: COLOR_TIME, text_size: 68,
+      align_h: align.CENTER_H, align_v: align.CENTER_V,
       text: this.getFormattedTime()
     })
-    this.state.mainGroup.push(this.state.timeTextWidget)
 
-    this.state.editBtnWidget = createWidget(widget.BUTTON, {
-      x: 105, y: 150, w: 180, h: 38, radius: 10,
-      normal_color: 0x6c5ce7, press_color: 0xa29bfe,
-      text: 'Edit Time', text_size: 18,
-      click_func: () => { 
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: "Edit Time" button clicked.`)
-        this.showEditScreen(true) 
-      }
-    })
-    this.state.mainGroup.push(this.state.editBtnWidget)
-
-    this.state.statusTextWidget = createWidget(widget.TEXT, {
-      x: 20, y: 195, w: 350, h: 40,
-      color: 0xf1c40f, text_size: 16, align_h: align.CENTER_H,
-      text: 'Status: Disabled'
-    })
-    this.state.mainGroup.push(this.state.statusTextWidget)
-
-    this.state.toggleBtnWidget = createWidget(widget.BUTTON, {
-      x: 50, y: 240, w: 290, h: 45, radius: 12,
-      normal_color: this.state.enabled ? 0xd63031 : 0x00b894,
-      press_color: this.state.enabled ? 0xff7675 : 0x55efc4,
-      text: this.state.enabled ? 'Disable Alarm' : 'Enable Alarm',
-      text_size: 20,
-      click_func: () => { 
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Toggle Alarm button clicked.`)
-        this.toggleAlarm() 
-      }
-    })
-    this.state.mainGroup.push(this.state.toggleBtnWidget)
-
-    this.state.dismissBtnWidget = createWidget(widget.BUTTON, {
-      x: 45, y: 295, w: 300, h: 65, radius: 16,
-      normal_color: 0xe67e22, press_color: 0xd35400,
-      text: 'DISMISS ALARM', text_size: 24,
-      click_func: () => { 
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: DISMISS ALARM button clicked manually.`)
-        this.dismissAlarm() 
-      }
-    })
-    this.state.mainGroup.push(this.state.dismissBtnWidget)
-
-    // --- EDIT TIME MODAL (Off-screen at x=1000) ---
-    const editTitle = createWidget(widget.TEXT, {
-      x: 1000, y: 40, w: 350, h: 35,
-      color: 0xffffff, text_size: 24, align_h: align.CENTER_H,
-      text: 'Set Wake Time'
+    this.state.nextLabelWidget = createWidget(widget.TEXT, {
+      x: 0, y: CY + 32, w: DEVICE_WIDTH, h: 36,
+      color: COLOR_LABEL, text_size: 22,
+      align_h: align.CENTER_H, align_v: align.CENTER_V,
+      text: ''
     })
 
-    const hMinus = createWidget(widget.BUTTON, {
-      x: 1000, y: 90, w: 75, h: 50, radius: 10,
-      normal_color: 0x6c5ce7, press_color: 0xa29bfe, text: '-1h', text_size: 20,
-      click_func: () => { 
+    this.state.mainGroup = [arrowBtn, this.state.nextTimeWidget, this.state.nextLabelWidget]
+  },
+
+  // --- EDIT SCREEN: hour/minute steppers, on/off, done ---
+  buildEditScreen() {
+    const title = createWidget(widget.TEXT, {
+      x: 0, y: CY - 160, w: DEVICE_WIDTH, h: 40,
+      color: COLOR_LABEL, text_size: 22, align_h: align.CENTER_H, align_v: align.CENTER_V,
+      text: 'Wake time'
+    })
+
+    const stepper = (y, onMinus, onPlus, minusText, plusText) => {
+      const minus = createWidget(widget.BUTTON, {
+        x: CX - 145, y, w: 72, h: 56, radius: 28,
+        normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
+        text: minusText, text_size: 20, click_func: onMinus
+      })
+      const value = createWidget(widget.TEXT, {
+        x: CX - 70, y, w: 140, h: 56,
+        color: COLOR_TIME, text_size: 40, align_h: align.CENTER_H, align_v: align.CENTER_V,
+        text: ''
+      })
+      const plus = createWidget(widget.BUTTON, {
+        x: CX + 73, y, w: 72, h: 56, radius: 28,
+        normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
+        text: plusText, text_size: 20, click_func: onPlus
+      })
+      return [minus, value, plus]
+    }
+
+    const hourRow = stepper(CY - 110,
+      () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -1h button clicked.`)
-        this.state.hour = (this.state.hour + 23) % 24; 
-        this.updateEditDisplay() 
-      }
-    })
-    this.state.editHourWidget = createWidget(widget.TEXT, {
-      x: 1000, y: 90, w: 140, h: 50,
-      color: 0x00cec9, text_size: 38, align_h: align.CENTER_H,
-      text: `${this.state.hour}h`
-    })
-    const hPlus = createWidget(widget.BUTTON, {
-      x: 1000, y: 90, w: 75, h: 50, radius: 10,
-      normal_color: 0x6c5ce7, press_color: 0xa29bfe, text: '+1h', text_size: 20,
-      click_func: () => { 
+        this.state.hour = (this.state.hour + 23) % 24
+        this.updateEditDisplay()
+      },
+      () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: +1h button clicked.`)
-        this.state.hour = (this.state.hour + 1) % 24; 
-        this.updateEditDisplay() 
-      }
-    })
+        this.state.hour = (this.state.hour + 1) % 24
+        this.updateEditDisplay()
+      },
+      '-1h', '+1h')
+    this.state.editHourWidget = hourRow[1]
 
-    const mMinus = createWidget(widget.BUTTON, {
-      x: 1000, y: 155, w: 75, h: 50, radius: 10,
-      normal_color: 0x6c5ce7, press_color: 0xa29bfe, text: '-5m', text_size: 20,
-      click_func: () => { 
+    const minRow = stepper(CY - 40,
+      () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -5m button clicked.`)
-        this.state.minute = (this.state.minute + 55) % 60; 
-        this.updateEditDisplay() 
-      }
-    })
-    this.state.editMinWidget = createWidget(widget.TEXT, {
-      x: 1000, y: 155, w: 140, h: 50,
-      color: 0x00cec9, text_size: 38, align_h: align.CENTER_H,
-      text: `${this.state.minute}m`
-    })
-    const mPlus = createWidget(widget.BUTTON, {
-      x: 1000, y: 155, w: 75, h: 50, radius: 10,
-      normal_color: 0x6c5ce7, press_color: 0xa29bfe, text: '+5m', text_size: 20,
-      click_func: () => { 
+        this.state.minute = (this.state.minute + 55) % 60
+        this.updateEditDisplay()
+      },
+      () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: +5m button clicked.`)
-        this.state.minute = (this.state.minute + 5) % 60; 
-        this.updateEditDisplay() 
+        this.state.minute = (this.state.minute + 5) % 60
+        this.updateEditDisplay()
+      },
+      '-5m', '+5m')
+    this.state.editMinWidget = minRow[1]
+
+    this.state.editToggleWidget = createWidget(widget.BUTTON, {
+      x: CX - 110, y: CY + 36, w: 220, h: 52, radius: 26,
+      normal_color: COLOR_GREY, press_color: COLOR_GREY_PRESS,
+      text: '', text_size: 22,
+      click_func: () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: On/Off toggle clicked.`)
+        // Persist the time shown so enabling schedules the same time the App reschedules from
+        localStorage.setItem('smart_wake_hour', String(this.state.hour))
+        localStorage.setItem('smart_wake_minute', String(this.state.minute))
+        this.toggleAlarm()
       }
     })
 
-    const saveBtn = createWidget(widget.BUTTON, {
-      x: 1000, y: 230, w: 290, h: 55, radius: 12,
-      normal_color: 0x00b894, press_color: 0x55efc4,
-      text: 'Done', text_size: 22,
-      click_func: () => { 
+    const doneBtn = createWidget(widget.BUTTON, {
+      x: CX - 85, y: CY + 104, w: 170, h: 56, radius: 28,
+      normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
+      text: 'Done', text_size: 24,
+      click_func: () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: "Done" button clicked on edit screen.`)
-        this.saveTimeAndReturn() 
+        this.saveTimeAndReturn()
       }
     })
 
-    this.state.editGroup = [editTitle, hMinus, this.state.editHourWidget, hPlus, mMinus, this.state.editMinWidget, mPlus, saveBtn]
+    this.state.editGroup = [title, ...hourRow, ...minRow, this.state.editToggleWidget, doneBtn]
+  },
 
+  // --- RING SCREEN: current time, snooze (red), dismiss (green) ---
+  buildRingScreen() {
+    this.state.ringClockWidget = createWidget(widget.TEXT, {
+      x: 0, y: CY - 130, w: DEVICE_WIDTH, h: 110,
+      color: COLOR_TIME, text_size: 92, align_h: align.CENTER_H, align_v: align.CENTER_V,
+      text: formatClock(Date.now())
+    })
+
+    const snoozeBtn = createWidget(widget.BUTTON, {
+      x: CX - 150, y: CY + 20, w: 140, h: 84, radius: 42,
+      normal_color: COLOR_RED, press_color: COLOR_RED_PRESS,
+      text: 'Snooze', text_size: 26,
+      click_func: () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: SNOOZE button clicked.`)
+        this.snoozeAlarm()
+      }
+    })
+
+    const dismissBtn = createWidget(widget.BUTTON, {
+      x: CX + 10, y: CY + 20, w: 140, h: 84, radius: 42,
+      normal_color: COLOR_GREEN, press_color: COLOR_GREEN_PRESS,
+      text: 'Dismiss', text_size: 26,
+      click_func: () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: DISMISS button clicked.`)
+        this.dismissAlarm()
+        this.showScreen('main')
+      }
+    })
+
+    this.state.ringGroup = [this.state.ringClockWidget, snoozeBtn, dismissBtn]
+  },
+
+  showScreen(screen) {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.showScreen() | ${this.state.screen} -> ${screen}`)
+    this.state.screen = screen
+
+    setGroupVisible(this.state.mainGroup, screen === 'main')
+    setGroupVisible(this.state.editGroup, screen === 'edit')
+    setGroupVisible(this.state.ringGroup, screen === 'ring')
+
+    if (screen === 'ring') {
+      this.startRingClock()
+    } else {
+      this.stopRingClock()
+    }
+
+    if (screen === 'edit') this.updateEditDisplay()
     this.updateStatusDisplay()
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.build()`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.showScreen()`)
+  },
+
+  isRingActive() {
+    const rangAtMs = Number(localStorage.getItem('smart_wake_rang_at_ms'))
+    const active = !!rangAtMs && Date.now() - rangAtMs <= RING_SCREEN_MAX_AGE_MS
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Ring Active Check -> Rang At: ${rangAtMs || 'N/A'}, Active: ${active}`)
+    return active
+  },
+
+  startRingClock() {
+    this.stopRingClock()
+    this.state.ringClockWidget.setProperty(prop.TEXT, formatClock(Date.now()))
+    this.state.ringClockTimer = setInterval(() => {
+      this.state.ringClockWidget.setProperty(prop.TEXT, formatClock(Date.now()))
+    }, 1000)
+  },
+
+  stopRingClock() {
+    if (this.state.ringClockTimer) {
+      clearInterval(this.state.ringClockTimer)
+      this.state.ringClockTimer = null
+    }
   },
 
   loadSavedConfig() {
@@ -183,59 +306,15 @@ Page({
   },
 
   getFormattedTime() {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.getFormattedTime()`)
-    const h = this.state.hour < 10 ? `0${this.state.hour}` : `${this.state.hour}`
-    const m = this.state.minute < 10 ? `0${this.state.minute}` : `${this.state.minute}`
-    const result = `${h}:${m}`
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.getFormattedTime() | Result: "${result}"`)
-    return result
-  },
-
-  showEditScreen(show) {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.showEditScreen() | Show: ${show}`)
-    this.state.editing = show
-
-    if (show) {
-      this.state.mainGroup.forEach(w => w.setProperty(prop.X, 1000))
-
-      const e = this.state.editGroup
-      e[0].setProperty(prop.X, 20)  // Title
-      e[1].setProperty(prop.X, 35)  // hMinus
-      e[2].setProperty(prop.X, 125) // Hour Text
-      e[3].setProperty(prop.X, 280) // hPlus
-      e[4].setProperty(prop.X, 35)  // mMinus
-      e[5].setProperty(prop.X, 125) // Min Text
-      e[6].setProperty(prop.X, 280) // mPlus
-      e[7].setProperty(prop.X, 50)  // Save Btn
-
-      this.updateEditDisplay()
-    } else {
-      this.state.mainGroup[0].setProperty(prop.X, 20)  // Title
-      this.state.mainGroup[1].setProperty(prop.X, 20)  // Time Text
-      this.state.mainGroup[2].setProperty(prop.X, 105) // Edit Button
-      this.state.mainGroup[3].setProperty(prop.X, 20)  // Status Text
-      this.state.mainGroup[4].setProperty(prop.X, 50)  // Toggle Button
-      this.state.mainGroup[5].setProperty(prop.X, 45)  // Dismiss Button
-
-      this.state.editGroup.forEach(w => w.setProperty(prop.X, 1000))
-
-      if (this.state.timeTextWidget) {
-        this.state.timeTextWidget.setProperty(prop.TEXT, this.getFormattedTime())
-      }
-    }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.showEditScreen()`)
+    return `${pad2(this.state.hour)}:${pad2(this.state.minute)}`
   },
 
   updateEditDisplay() {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.updateEditDisplay()`)
     if (this.state.editHourWidget && this.state.editMinWidget) {
-      const hStr = this.state.hour < 10 ? `0${this.state.hour}` : `${this.state.hour}`
-      const mStr = this.state.minute < 10 ? `0${this.state.minute}` : `${this.state.minute}`
-      this.state.editHourWidget.setProperty(prop.TEXT, `${hStr}h`)
-      this.state.editMinWidget.setProperty(prop.TEXT, `${mStr}m`)
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Edit Display Updated -> ${hStr}h ${mStr}m`)
+      this.state.editHourWidget.setProperty(prop.TEXT, `${pad2(this.state.hour)}h`)
+      this.state.editMinWidget.setProperty(prop.TEXT, `${pad2(this.state.minute)}m`)
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Edit Display Updated -> ${pad2(this.state.hour)}h ${pad2(this.state.minute)}m`)
     }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.updateEditDisplay()`)
   },
 
   saveTimeAndReturn() {
@@ -249,8 +328,7 @@ Page({
       this.scheduleAlarmService()
     }
 
-    this.showEditScreen(false)
-    this.updateStatusDisplay()
+    this.showScreen('main')
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.saveTimeAndReturn()`)
   },
 
@@ -258,12 +336,14 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.dismissAlarm()`)
     try {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Invoking getApp().stopVibration()...`)
-      getApp().stopVibration()
+      callApp('stopVibration')
+      // A dismissed ring can no longer be snoozed
+      localStorage.removeItem('smart_wake_rang_at_ms')
 
       // EXPLICIT CHECK: If alarm is actively enabled, ensure tomorrow's alarm is locked in
       if (this.state.enabled) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm is active -> Invoking getApp().scheduleNextDayAlarm() from dismiss action...`)
-        getApp().scheduleNextDayAlarm()
+        callApp('scheduleNextDayAlarm')
       }
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] dismissAlarm exception:`, e)
@@ -271,9 +351,26 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.dismissAlarm()`)
   },
 
+  snoozeAlarm() {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.snoozeAlarm()`)
+    if (!this.state.enabled) {
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm disabled. Nothing to snooze.`)
+      showToast({ text: 'Alarm is off' })
+    } else {
+      const snoozeUntilMs = callApp('snoozeAlarm')
+      if (snoozeUntilMs) {
+        showToast({ text: `Snoozed until ${formatClock(snoozeUntilMs)}` })
+      } else {
+        showToast({ text: 'Nothing to snooze' })
+      }
+    }
+    this.showScreen('main')
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.snoozeAlarm()`)
+  },
+
   toggleAlarm() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.toggleAlarm()`)
-    this.dismissAlarm()
+    callApp('stopVibration')
 
     this.state.enabled = !this.state.enabled
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] New Alarm State: ${this.state.enabled}`)
@@ -285,6 +382,12 @@ Page({
     } else {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Disabling alarm service...`)
       this.cancelAlarmService()
+      localStorage.removeItem('smart_wake_target_ms')
+      localStorage.removeItem('smart_wake_start_ms')
+      localStorage.removeItem('smart_wake_hard_limit_ms')
+      localStorage.removeItem('smart_wake_snooze_until_ms')
+      localStorage.removeItem('smart_wake_rang_at_ms')
+      localStorage.removeItem('smart_wake_rang_hard_limit_ms')
     }
 
     this.updateStatusDisplay()
@@ -298,33 +401,17 @@ Page({
     const hour = Number(this.state.hour)
     const min = Number(this.state.minute)
 
+    // Next target whose -25m window is still in the future (handles windows that cross midnight)
     const now = new Date()
-    const targetTime = new Date()
-
-    // 1. Target time set to today first
-    targetTime.setHours(hour, min, 0, 0)
-
-    // 2. Calculate window start (-25m) and hard limit (0m offset)
-    let windowStart = new Date(targetTime.getTime() - 25 * 60 * 1000)
-    let hardLimit = new Date(targetTime.getTime())
-
-    // 3. Date Boundary Check:
-    // If window start has already passed today, shift target to tomorrow
-    if (windowStart.getTime() <= now.getTime()) {
-      targetTime.setDate(targetTime.getDate() + 1)
-      windowStart = new Date(targetTime.getTime() - 25 * 60 * 1000)
-      hardLimit = new Date(targetTime.getTime())
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Window start time passed today. Target shifted to TOMORROW.`)
-    } else {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Target window is in the future. Scheduled for TODAY.`)
-    }
+    const { target: targetTime, windowStart, hardLimit } = getNextWakeWindow(hour, min, now)
 
     localStorage.setItem('smart_wake_target_ms', String(targetTime.getTime()))
     localStorage.setItem('smart_wake_start_ms', String(windowStart.getTime()))
     localStorage.setItem('smart_wake_hard_limit_ms', String(hardLimit.getTime()))
+    localStorage.removeItem('smart_wake_snooze_until_ms')
 
     const startSeconds = Math.floor(windowStart.getTime() / 1000)
-    
+
     const alarmId = set({
       url: 'page/gt/home/index.page',
       time: startSeconds
@@ -343,7 +430,8 @@ Page({
   cancelAlarmService() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.cancelAlarmService()`)
     try {
-      this.dismissAlarm()
+      // Only stop the motor here; dismissAlarm() would schedule a new alarm while we cancel
+      callApp('stopVibration')
 
       const activeAlarmId = localStorage.getItem('smart_wake_alarm_id')
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Active Alarm ID read from storage: ${activeAlarmId}`)
@@ -360,35 +448,39 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.cancelAlarmService()`)
   },
 
+  // Refreshes the main screen's time/label and the edit screen's on/off button
   updateStatusDisplay() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.updateStatusDisplay()`)
-    if (this.state.statusTextWidget && this.state.toggleBtnWidget) {
-      if (this.state.timeTextWidget) {
-        this.state.timeTextWidget.setProperty(prop.TEXT, this.getFormattedTime())
-      }
+    const { nextTimeWidget, nextLabelWidget, editToggleWidget } = this.state
+    if (!nextTimeWidget || !nextLabelWidget || !editToggleWidget) return
 
-      if (this.state.enabled) {
-        const startMs = localStorage.getItem('smart_wake_start_ms')
-        let checkStr = ''
-        if (startMs) {
-          const sDate = new Date(Number(startMs))
-          const sh = sDate.getHours() < 10 ? `0${sDate.getHours()}` : sDate.getHours()
-          const sm = sDate.getMinutes() < 10 ? `0${sDate.getMinutes()}` : sDate.getMinutes()
-          checkStr = `\nChecks start at ${sh}:${sm}`
-        }
+    let timeText = this.getFormattedTime()
+    let label = 'Alarm off'
 
-        this.state.statusTextWidget.setProperty(prop.TEXT, `Status: Active${checkStr}`)
-        this.state.toggleBtnWidget.setProperty(prop.TEXT, 'Disable Alarm')
-        this.state.toggleBtnWidget.setProperty(prop.NORMAL_COLOR, 0xd63031)
-        this.state.toggleBtnWidget.setProperty(prop.PRESS_COLOR, 0xff7675)
+    if (this.state.enabled) {
+      const snoozeUntilMs = Number(localStorage.getItem('smart_wake_snooze_until_ms'))
+      const targetMs = Number(localStorage.getItem('smart_wake_target_ms'))
+
+      if (snoozeUntilMs && snoozeUntilMs > Date.now()) {
+        timeText = formatClock(snoozeUntilMs)
+        label = 'Snoozed'
+      } else if (targetMs) {
+        const today = new Date()
+        label = new Date(targetMs).toDateString() === today.toDateString() ? 'Today' : 'Tomorrow'
       } else {
-        this.state.statusTextWidget.setProperty(prop.TEXT, 'Status: Disabled')
-        this.state.toggleBtnWidget.setProperty(prop.TEXT, 'Enable Alarm')
-        this.state.toggleBtnWidget.setProperty(prop.NORMAL_COLOR, 0x00b894)
-        this.state.toggleBtnWidget.setProperty(prop.PRESS_COLOR, 0x55efc4)
+        label = 'Next alarm'
       }
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Status display refreshed. Active: ${this.state.enabled}`)
     }
+
+    nextTimeWidget.setProperty(prop.TEXT, timeText)
+    nextTimeWidget.setProperty(prop.COLOR, this.state.enabled ? COLOR_TIME : COLOR_TIME_OFF)
+    nextLabelWidget.setProperty(prop.TEXT, label)
+
+    editToggleWidget.setProperty(prop.TEXT, this.state.enabled ? 'Alarm: On' : 'Alarm: Off')
+    editToggleWidget.setProperty(prop.NORMAL_COLOR, this.state.enabled ? COLOR_GREEN : COLOR_GREY)
+    editToggleWidget.setProperty(prop.PRESS_COLOR, this.state.enabled ? COLOR_GREEN_PRESS : COLOR_GREY_PRESS)
+
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Status display refreshed. Active: ${this.state.enabled}, Shown: ${timeText} (${label})`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.updateStatusDisplay()`)
   }
 })

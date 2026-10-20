@@ -37,14 +37,126 @@
         }
       },
       "platforms": [
-        { "st": "r" },
-        { "st": "s" }
+        {
+          "st": "r"
+        },
+        {
+          "st": "s"
+        }
       ],
       "designWidth": 390
     }
   },
   "i18n": {
     "en-US": {
+      "appName": "Smart Wake"
+    },
+    "en-GB": {
+      "appName": "Smart Wake"
+    },
+    "en-IN": {
+      "appName": "Smart Wake"
+    },
+    "zh-CN": {
+      "appName": "Smart Wake"
+    },
+    "zh-TW": {
+      "appName": "Smart Wake"
+    },
+    "zh-HK": {
+      "appName": "Smart Wake"
+    },
+    "es-ES": {
+      "appName": "Smart Wake"
+    },
+    "ru-RU": {
+      "appName": "Smart Wake"
+    },
+    "ko-KR": {
+      "appName": "Smart Wake"
+    },
+    "fr-FR": {
+      "appName": "Smart Wake"
+    },
+    "de-DE": {
+      "appName": "Smart Wake"
+    },
+    "id-ID": {
+      "appName": "Smart Wake"
+    },
+    "pl-PL": {
+      "appName": "Smart Wake"
+    },
+    "it-IT": {
+      "appName": "Smart Wake"
+    },
+    "ja-JP": {
+      "appName": "Smart Wake"
+    },
+    "th-TH": {
+      "appName": "Smart Wake"
+    },
+    "ar-EG": {
+      "appName": "Smart Wake"
+    },
+    "vi-VN": {
+      "appName": "Smart Wake"
+    },
+    "pt-PT": {
+      "appName": "Smart Wake"
+    },
+    "nl-NL": {
+      "appName": "Smart Wake"
+    },
+    "tr-TR": {
+      "appName": "Smart Wake"
+    },
+    "uk-UA": {
+      "appName": "Smart Wake"
+    },
+    "iw-IL": {
+      "appName": "Smart Wake"
+    },
+    "pt-BR": {
+      "appName": "Smart Wake"
+    },
+    "ro-RO": {
+      "appName": "Smart Wake"
+    },
+    "cs-CZ": {
+      "appName": "Smart Wake"
+    },
+    "el-GR": {
+      "appName": "Smart Wake"
+    },
+    "sr-RS": {
+      "appName": "Smart Wake"
+    },
+    "ca-ES": {
+      "appName": "Smart Wake"
+    },
+    "fi-FI": {
+      "appName": "Smart Wake"
+    },
+    "nb-NO": {
+      "appName": "Smart Wake"
+    },
+    "da-DK": {
+      "appName": "Smart Wake"
+    },
+    "sv-SE": {
+      "appName": "Smart Wake"
+    },
+    "hu-HU": {
+      "appName": "Smart Wake"
+    },
+    "ms-MY": {
+      "appName": "Smart Wake"
+    },
+    "sk-SK": {
+      "appName": "Smart Wake"
+    },
+    "hi-IN": {
       "appName": "Smart Wake"
     }
   },
