@@ -3,7 +3,7 @@ import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
 import { getDeviceInfo } from '@zos/device'
-import { getNextWakeWindow } from '../../../utils/index'
+import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN } from '../../../utils/index'
 
 const localStorage = new LocalStorage()
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -73,9 +73,11 @@ Page({
     ringGroup: [],
     nextTimeWidget: null,
     nextLabelWidget: null,
+    mainToggleWidget: null,
     editHourWidget: null,
     editMinWidget: null,
-    editToggleWidget: null,
+    windowMin: DEFAULT_WINDOW_MIN,
+    editWindowWidget: null,
     ringClockWidget: null,
     ringClockTimer: null
   },
@@ -83,6 +85,9 @@ Page({
   build() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.build() | Screen: ${DEVICE_WIDTH}x${DEVICE_HEIGHT}`)
     this.loadSavedConfig()
+
+    // An alarm can reopen the page while the App is still running (App.onCreate not called), so check here too
+    callApp('evaluateIfDue')
 
     this.buildMainScreen()
     this.buildEditScreen()
@@ -128,13 +133,23 @@ Page({
       text: ''
     })
 
-    this.state.mainGroup = [arrowBtn, this.state.nextTimeWidget, this.state.nextLabelWidget]
+    this.state.mainToggleWidget = createWidget(widget.BUTTON, {
+      x: CX - 80, y: CY + 84, w: 160, h: 52, radius: 26,
+      normal_color: COLOR_GREY, press_color: COLOR_GREY_PRESS,
+      text: '', text_size: 22,
+      click_func: () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Main screen On/Off toggle clicked.`)
+        this.toggleAlarm()
+      }
+    })
+
+    this.state.mainGroup = [arrowBtn, this.state.nextTimeWidget, this.state.nextLabelWidget, this.state.mainToggleWidget]
   },
 
-  // --- EDIT SCREEN: hour/minute steppers, on/off, done ---
+  // --- EDIT SCREEN: hour/minute/window steppers, done ---
   buildEditScreen() {
     const title = createWidget(widget.TEXT, {
-      x: 0, y: CY - 160, w: DEVICE_WIDTH, h: 40,
+      x: 0, y: CY - 172, w: DEVICE_WIDTH, h: 40,
       color: COLOR_LABEL, text_size: 22, align_h: align.CENTER_H, align_v: align.CENTER_V,
       text: 'Wake time'
     })
@@ -158,7 +173,7 @@ Page({
       return [minus, value, plus]
     }
 
-    const hourRow = stepper(CY - 110,
+    const hourRow = stepper(CY - 128,
       () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -1h button clicked.`)
         this.state.hour = (this.state.hour + 23) % 24
@@ -172,7 +187,7 @@ Page({
       '-1h', '+1h')
     this.state.editHourWidget = hourRow[1]
 
-    const minRow = stepper(CY - 40,
+    const minRow = stepper(CY - 62,
       () => {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: -5m button clicked.`)
         this.state.minute = (this.state.minute + 55) % 60
@@ -186,21 +201,28 @@ Page({
       '-5m', '+5m')
     this.state.editMinWidget = minRow[1]
 
-    this.state.editToggleWidget = createWidget(widget.BUTTON, {
-      x: CX - 110, y: CY + 36, w: 220, h: 52, radius: 26,
-      normal_color: COLOR_GREY, press_color: COLOR_GREY_PRESS,
-      text: '', text_size: 22,
-      click_func: () => {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: On/Off toggle clicked.`)
-        // Persist the time shown so enabling schedules the same time the App reschedules from
-        localStorage.setItem('smart_wake_hour', String(this.state.hour))
-        localStorage.setItem('smart_wake_minute', String(this.state.minute))
-        this.toggleAlarm()
-      }
+    const windowLabel = createWidget(widget.TEXT, {
+      x: 0, y: CY + 2, w: DEVICE_WIDTH, h: 26,
+      color: COLOR_LABEL, text_size: 18, align_h: align.CENTER_H, align_v: align.CENTER_V,
+      text: 'Smart window (checks before)'
     })
 
+    const windowRow = stepper(CY + 30,
+      () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Window -5m button clicked.`)
+        this.state.windowMin = Math.max(MIN_WINDOW_MIN, this.state.windowMin - 5)
+        this.updateEditDisplay()
+      },
+      () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Window +5m button clicked.`)
+        this.state.windowMin = Math.min(MAX_WINDOW_MIN, this.state.windowMin + 5)
+        this.updateEditDisplay()
+      },
+      '-5', '+5')
+    this.state.editWindowWidget = windowRow[1]
+
     const doneBtn = createWidget(widget.BUTTON, {
-      x: CX - 85, y: CY + 104, w: 170, h: 56, radius: 28,
+      x: CX - 85, y: CY + 100, w: 170, h: 56, radius: 28,
       normal_color: COLOR_ACCENT, press_color: COLOR_ACCENT_PRESS,
       text: 'Done', text_size: 24,
       click_func: () => {
@@ -209,7 +231,7 @@ Page({
       }
     })
 
-    this.state.editGroup = [title, ...hourRow, ...minRow, this.state.editToggleWidget, doneBtn]
+    this.state.editGroup = [title, ...hourRow, ...minRow, windowLabel, ...windowRow, doneBtn]
   },
 
   // --- RING SCREEN: current time, snooze (red), dismiss (green) ---
@@ -299,6 +321,7 @@ Page({
       if (savedEnabled !== undefined && savedEnabled !== null) {
         this.state.enabled = String(savedEnabled) === 'true'
       }
+      this.state.windowMin = readWindowMin(localStorage)
     } catch (e) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] loadSavedConfig exception:`, e)
     }
@@ -313,7 +336,10 @@ Page({
     if (this.state.editHourWidget && this.state.editMinWidget) {
       this.state.editHourWidget.setProperty(prop.TEXT, `${pad2(this.state.hour)}h`)
       this.state.editMinWidget.setProperty(prop.TEXT, `${pad2(this.state.minute)}m`)
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Edit Display Updated -> ${pad2(this.state.hour)}h ${pad2(this.state.minute)}m`)
+      if (this.state.editWindowWidget) {
+        this.state.editWindowWidget.setProperty(prop.TEXT, `${this.state.windowMin} min`)
+      }
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Edit Display Updated -> ${pad2(this.state.hour)}h ${pad2(this.state.minute)}m, Window: ${this.state.windowMin} min`)
     }
   },
 
@@ -322,6 +348,7 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Persisting target time -> Hour: ${this.state.hour}, Minute: ${this.state.minute}`)
     localStorage.setItem('smart_wake_hour', String(this.state.hour))
     localStorage.setItem('smart_wake_minute', String(this.state.minute))
+    localStorage.setItem('smart_wake_window_min', String(this.state.windowMin))
 
     if (this.state.enabled) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm is enabled. Re-scheduling service for new time...`)
@@ -403,7 +430,7 @@ Page({
 
     // Next target whose -25m window is still in the future (handles windows that cross midnight)
     const now = new Date()
-    const { target: targetTime, windowStart, hardLimit } = getNextWakeWindow(hour, min, now)
+    const { target: targetTime, windowStart, hardLimit } = getNextWakeWindow(hour, min, now, readWindowMin(localStorage))
 
     localStorage.setItem('smart_wake_target_ms', String(targetTime.getTime()))
     localStorage.setItem('smart_wake_start_ms', String(windowStart.getTime()))
@@ -451,8 +478,8 @@ Page({
   // Refreshes the main screen's time/label and the edit screen's on/off button
   updateStatusDisplay() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.updateStatusDisplay()`)
-    const { nextTimeWidget, nextLabelWidget, editToggleWidget } = this.state
-    if (!nextTimeWidget || !nextLabelWidget || !editToggleWidget) return
+    const { nextTimeWidget, nextLabelWidget, mainToggleWidget } = this.state
+    if (!nextTimeWidget || !nextLabelWidget || !mainToggleWidget) return
 
     let timeText = this.getFormattedTime()
     let label = 'Alarm off'
@@ -466,7 +493,9 @@ Page({
         label = 'Snoozed'
       } else if (targetMs) {
         const today = new Date()
-        label = new Date(targetMs).toDateString() === today.toDateString() ? 'Today' : 'Tomorrow'
+        const day = new Date(targetMs).toDateString() === today.toDateString() ? 'Today' : 'Tomorrow'
+        const startMs = Number(localStorage.getItem('smart_wake_start_ms'))
+        label = startMs ? `${day}, checks from ${formatClock(startMs)}` : day
       } else {
         label = 'Next alarm'
       }
@@ -476,9 +505,9 @@ Page({
     nextTimeWidget.setProperty(prop.COLOR, this.state.enabled ? COLOR_TIME : COLOR_TIME_OFF)
     nextLabelWidget.setProperty(prop.TEXT, label)
 
-    editToggleWidget.setProperty(prop.TEXT, this.state.enabled ? 'Alarm: On' : 'Alarm: Off')
-    editToggleWidget.setProperty(prop.NORMAL_COLOR, this.state.enabled ? COLOR_GREEN : COLOR_GREY)
-    editToggleWidget.setProperty(prop.PRESS_COLOR, this.state.enabled ? COLOR_GREEN_PRESS : COLOR_GREY_PRESS)
+    mainToggleWidget.setProperty(prop.TEXT, this.state.enabled ? 'On' : 'Off')
+    mainToggleWidget.setProperty(prop.NORMAL_COLOR, this.state.enabled ? COLOR_GREEN : COLOR_GREY)
+    mainToggleWidget.setProperty(prop.PRESS_COLOR, this.state.enabled ? COLOR_GREEN_PRESS : COLOR_GREY_PRESS)
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Status display refreshed. Active: ${this.state.enabled}, Shown: ${timeText} (${label})`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.updateStatusDisplay()`)

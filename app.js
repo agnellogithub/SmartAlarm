@@ -2,13 +2,17 @@ import { Sleep, Vibrator } from '@zos/sensor'
 import { LocalStorage } from '@zos/storage'
 import { set, cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
-import { getNextWakeWindow } from './utils/index'
+import { getNextWakeWindow, readWindowMin } from './utils/index'
 
 const localStorage = new LocalStorage()
 const SLEEP_RECORD_MAX_AGE_MIN = 15
 const SNOOZE_MS = 10 * 60 * 1000
 // Snooze is only offered for a ring within this long
 const SNOOZE_MAX_AGE_MS = 30 * 60 * 1000
+const HARD_LIMIT_TOLERANCE_MS = 5 * 1000
+const MIN_ALARM_LEAD_MS = 30 * 1000
+// Must stay below MIN_ALARM_LEAD_MS so a real follow-up check is never skipped
+const EVAL_DEDUPE_MS = 10 * 1000
 
 function getLogTime() {
   const d = new Date()
@@ -28,6 +32,13 @@ App({
 
   onCreate(options) {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.onCreate() | Options:`, JSON.stringify(options))
+    this.evaluateIfDue(options)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.onCreate()`)
+  },
+
+  // Called from App.onCreate and from the page (an alarm may reopen the page without recreating the App)
+  evaluateIfDue(options) {
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: App.evaluateIfDue()`)
 
     // The page url is present on normal launches too, so it can't identify an alarm launch
     const isAlarmLaunch = options && (
@@ -45,14 +56,21 @@ App({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] onCreate Check -> isAlarmLaunch: ${isAlarmLaunch}, isInAlarmWindow: ${isInAlarmWindow}`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Window State -> Start: ${startMs ? new Date(startMs).toLocaleString() : 'N/A'}, Target/Hard Limit: ${hardLimitMs ? new Date(hardLimitMs).toLocaleString() : 'N/A'}, Current: ${new Date(nowMs).toLocaleString()}`)
 
-    if (isAlarmLaunch || isInAlarmWindow) {
+    // Skip if App.onCreate and the page both ask within moments of each other
+    const lastEvalMs = Number(localStorage.getItem('smart_wake_last_eval_ms'))
+    const recentlyEvaluated = lastEvalMs && nowMs - lastEvalMs >= 0 && nowMs - lastEvalMs < EVAL_DEDUPE_MS
+
+    if ((isAlarmLaunch || isInAlarmWindow) && recentlyEvaluated) {
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Evaluated ${nowMs - lastEvalMs} ms ago -> Skipping duplicate evaluation.`)
+    } else if (isAlarmLaunch || isInAlarmWindow) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm Context Validated -> Invoking runSmartWakeEvaluation()`)
+      localStorage.setItem('smart_wake_last_eval_ms', String(nowMs))
       this.runSmartWakeEvaluation()
     } else {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Manual UI Open Detected -> Skipping automated background evaluation.`)
     }
 
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.onCreate()`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: App.evaluateIfDue()`)
   },
 
   runSmartWakeEvaluation() {
@@ -75,7 +93,8 @@ App({
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Time Boundary Check -> Current: ${new Date(nowMs).toLocaleString()}, Target Hard Limit: ${new Date(hardLimitMs).toLocaleString()}`)
 
       // 1. HARD ALARM LIMIT CHECK (Target Time Reached)
-      if (hardLimitMs && nowMs >= hardLimitMs) {
+      // Tolerance: the alarm may fire a moment before the exact hard limit
+      if (hardLimitMs && nowMs >= hardLimitMs - HARD_LIMIT_TOLERANCE_MS) {
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] HARD LIMIT TRIGGERED (Target Time Reached) -> Executing alarm and rescheduling next day.`)
         this.sendWakeAlert('Hard Target Limit Reached! Time to wake up!')
         this.triggerAlarmVibration()
@@ -181,7 +200,9 @@ App({
         this.scheduleNextDayAlarm()
       } else {
         const nextCheckMs = nowMs + 5 * 60 * 1000
-        const targetTimeMs = hardLimitMs && hardLimitMs < nextCheckMs ? hardLimitMs : nextCheckMs
+        const cappedMs = hardLimitMs && hardLimitMs < nextCheckMs ? hardLimitMs : nextCheckMs
+        // Never schedule closer than the minimum lead, or the alarm can land in the past and never fire
+        const targetTimeMs = Math.max(cappedMs, nowMs + MIN_ALARM_LEAD_MS)
 
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] NON-OPTIMAL STAGE ACTIVE (${stageName}) -> Scheduling next 5-min check for: ${new Date(targetTimeMs).toLocaleString()}`)
 
@@ -352,7 +373,7 @@ App({
 
       // Next occurrence whose window has not started (avoids skipping a day when dismissed the evening before)
       const now = new Date()
-      const { target: tomorrowTarget, windowStart, hardLimit } = getNextWakeWindow(targetHour, targetMin, now)
+      const { target: tomorrowTarget, windowStart, hardLimit } = getNextWakeWindow(targetHour, targetMin, now, readWindowMin(localStorage))
 
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Storing millisecond values into LocalStorage...`)
       localStorage.setItem('smart_wake_target_ms', String(tomorrowTarget.getTime()))
