@@ -1,4 +1,4 @@
-import { set, cancel } from '@zos/alarm'
+import * as zosAlarm from '@zos/alarm'
 import { getNextWakeWindow, readWindowMin, readSnoozeMin, logEvent, formatTimeOfDay, trace } from './index'
 
 // Shared by App and Page so the page never depends on reaching App methods through getApp()
@@ -7,13 +7,48 @@ export const ALARM_PAGE_URL = 'page/gt/home/index.page'
 // Snooze is only offered for a ring within this long
 export const SNOOZE_MAX_AGE_MS = 30 * 60 * 1000
 
+// IDs of this app's alarms the system still holds, or null if the API isn't available
+function getPendingAlarmIds() {
+  try {
+    if (typeof zosAlarm.getAllAlarms !== 'function') return null
+    const ids = zosAlarm.getAllAlarms()
+    return Array.isArray(ids) ? ids.map(Number) : null
+  } catch (e) {
+    trace(`getAllAlarms exception: ${e && e.message ? e.message : e}`)
+    return null
+  }
+}
+
+// Logs whether the alarm we expect is still registered with the system
+export function checkPendingAlarm(localStorage, context) {
+  const expectedId = Number(localStorage.getItem('smart_wake_alarm_id'))
+  const dueMs = Number(localStorage.getItem('smart_wake_next_alarm_ms'))
+  const pending = getPendingAlarmIds()
+  const present = pending === null ? 'unknown' : (expectedId && pending.includes(expectedId) ? 'yes' : 'NO')
+  logEvent(localStorage, `${context}: expect alarm ${expectedId || 'none'} due ${dueMs ? new Date(dueMs).toLocaleString() : 'n/a'}, pending=${present}, system alarms=${pending === null ? 'n/a' : JSON.stringify(pending)}`)
+}
+
+// Sets the one alarm this app relies on. store: true keeps it across a watch restart.
+export function placeAlarm(localStorage, timeMs, reason) {
+  const timeSec = Math.floor(timeMs / 1000)
+  const alarmId = zosAlarm.set({
+    url: ALARM_PAGE_URL,
+    time: timeSec,
+    store: true
+  })
+  localStorage.setItem('smart_wake_alarm_id', String(alarmId))
+  localStorage.setItem('smart_wake_next_alarm_ms', String(timeSec * 1000))
+  checkPendingAlarm(localStorage, `alarm set (${reason})`)
+  return alarmId
+}
+
 export function cancelExistingAlarm(localStorage) {
   trace('ENTER: cancelExistingAlarm()')
   try {
     const activeAlarmId = localStorage.getItem('smart_wake_alarm_id')
     trace(`Reading active alarm ID from LocalStorage: ${activeAlarmId}`)
     if (activeAlarmId) {
-      cancel(Number(activeAlarmId))
+      zosAlarm.cancel(Number(activeAlarmId))
       localStorage.removeItem('smart_wake_alarm_id')
       trace(`Alarm ID ${activeAlarmId} successfully cancelled and removed from storage.`)
     } else {
@@ -47,13 +82,7 @@ export function scheduleNextDayAlarm(localStorage) {
 
     cancelExistingAlarm(localStorage)
 
-    const alarmId = set({
-      url: ALARM_PAGE_URL,
-      time: Math.floor(windowStart.getTime() / 1000)
-    })
-
-    localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-    localStorage.setItem('smart_wake_next_alarm_ms', String(windowStart.getTime()))
+    const alarmId = placeAlarm(localStorage, windowStart.getTime(), 'next day window start')
 
     trace(`=== NEXT DAY ROLLOVER SUCCESS === Checks Start: ${windowStart.toLocaleString()} (Alarm ID: ${alarmId}), Target Hard Limit: ${hardLimit.toLocaleString()}`)
     logEvent(localStorage, `next day scheduled: checks ${windowStart.toLocaleString()}, target ${formatTimeOfDay(hardLimit.getTime())} (alarm id ${alarmId})`)
@@ -109,13 +138,7 @@ export function snoozeAlarm(localStorage) {
 
     cancelExistingAlarm(localStorage)
 
-    const alarmId = set({
-      url: ALARM_PAGE_URL,
-      time: Math.floor(snoozeUntilMs / 1000)
-    })
-
-    localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-    localStorage.setItem('smart_wake_next_alarm_ms', String(snoozeUntilMs))
+    const alarmId = placeAlarm(localStorage, snoozeUntilMs, 'snooze')
     // Clearing the pending ring also stops the App's vibration loop
     localStorage.removeItem('smart_wake_rang_at_ms')
 

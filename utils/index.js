@@ -88,11 +88,38 @@ export function logEvent(localStorage, message) {
   }
 }
 
+// The phone's log viewer drops lines sent in a burst (79 stored entries arrived as ~13),
+// so entries go out a few per line, paced, with numbered parts to make any gap visible.
+const DUMP_ENTRIES_PER_LINE = 8
+const DUMP_INTERVAL_MS = 120
+
+// Returns a function that stops the paced dump (call it when the page is destroyed)
 export function dumpEventLog(localStorage) {
   const log = readEventLog(localStorage)
-  console.log(`[SMART_WAKE_EVENT] ===== Stored event log (${log.length} entries, oldest first) =====`)
-  log.forEach(line => console.log(`[SMART_WAKE_EVENT] ${line}`))
-  console.log('[SMART_WAKE_EVENT] ===== End of stored event log =====')
+  const parts = []
+  for (let i = 0; i < log.length; i += DUMP_ENTRIES_PER_LINE) {
+    parts.push(log.slice(i, i + DUMP_ENTRIES_PER_LINE))
+  }
+  console.log(`[SMART_WAKE_EVENT] ===== Stored event log: ${log.length} entries in ${parts.length} parts, oldest first =====`)
+
+  let index = 0
+  let timer = null
+  const sendNext = () => {
+    if (index >= parts.length) {
+      console.log(`[SMART_WAKE_EVENT] ===== End of stored event log (${parts.length} parts sent) =====`)
+      timer = null
+      return
+    }
+    console.log(`[SMART_WAKE_EVENT] part ${index + 1}/${parts.length} | ${parts[index].join(' | ')}`)
+    index++
+    timer = setTimeout(sendNext, DUMP_INTERVAL_MS)
+  }
+  timer = setTimeout(sendNext, DUMP_INTERVAL_MS)
+
+  return () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+  }
 }
 
 // HH:MM:SS for event log messages

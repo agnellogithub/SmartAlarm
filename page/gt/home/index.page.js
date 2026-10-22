@@ -1,10 +1,10 @@
 import { createWidget, widget, prop, align } from '@zos/ui'
-import { set, cancel } from '@zos/alarm'
+import { cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
 import { Vibrator } from '@zos/sensor'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, dumpEventLog } from '../../../utils/index'
-import { scheduleNextDayAlarm, snoozeAlarm, isRingPending } from '../../../utils/alarm'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm } from '../../../utils/alarm'
 
 const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -92,7 +92,8 @@ Page({
     snoozeMin: DEFAULT_SNOOZE_MIN,
     editSnoozeWidget: null,
     ringClockWidget: null,
-    ringClockTimer: null
+    ringClockTimer: null,
+    stopLogDump: null
   },
 
   build() {
@@ -102,7 +103,7 @@ Page({
     // An alarm can reopen the page while the App is still running (App.onCreate not called), so check here too
     callApp('evaluateIfDue')
     // Print the stored history so it shows up whenever the phone's log viewer is open
-    dumpEventLog(localStorage)
+    this.state.stopLogDump = dumpEventLog(localStorage)
 
     this.buildMainScreen()
     this.buildEditScreen()
@@ -110,6 +111,7 @@ Page({
 
     const firstScreen = this.isRingActive() ? 'ring' : 'main'
     logEvent(localStorage, `page opened on ${firstScreen} screen`)
+    checkPendingAlarm(localStorage, 'page open')
     this.showScreen(firstScreen)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.build()`)
   },
@@ -117,6 +119,7 @@ Page({
   onDestroy() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.onDestroy()`)
     this.stopRingClock()
+    if (this.state.stopLogDump) this.state.stopLogDump()
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.onDestroy()`)
   },
 
@@ -506,15 +509,7 @@ Page({
     localStorage.setItem('smart_wake_hard_limit_ms', String(hardLimit.getTime()))
     localStorage.removeItem('smart_wake_snooze_until_ms')
 
-    const startSeconds = Math.floor(windowStart.getTime() / 1000)
-
-    const alarmId = set({
-      url: 'page/gt/home/index.page',
-      time: startSeconds
-    })
-
-    localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-    localStorage.setItem('smart_wake_next_alarm_ms', String(startSeconds * 1000))
+    const alarmId = placeAlarm(localStorage, windowStart.getTime(), 'window start')
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] === MANUAL SCHEDULE VERIFICATION ===`)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time  : ${now.toLocaleString()}`)

@@ -1,8 +1,7 @@
 import { Sleep, Vibrator, HeartRate } from '@zos/sensor'
-import { set } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
 import { logEvent, formatTimeOfDay, storage, readCheckMin } from './utils/index'
-import { cancelExistingAlarm, scheduleNextDayAlarm, recordRing, isRingPending, snoozeAlarm } from './utils/alarm'
+import { cancelExistingAlarm, scheduleNextDayAlarm, recordRing, isRingPending, snoozeAlarm, placeAlarm } from './utils/alarm'
 
 const localStorage = storage
 const SLEEP_RECORD_MAX_AGE_MIN = 15
@@ -209,13 +208,7 @@ App({
 
         this.cancelExistingAlarm()
 
-        const alarmId = set({
-          url: 'page/gt/home/index.page',
-          time: Math.floor(targetTimeMs / 1000)
-        })
-
-        localStorage.setItem('smart_wake_alarm_id', String(alarmId))
-        localStorage.setItem('smart_wake_next_alarm_ms', String(Math.floor(targetTimeMs / 1000) * 1000))
+        const alarmId = placeAlarm(localStorage, targetTimeMs, 'next check')
         console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Recurring Check Alarm Set -> ID: ${alarmId}`)
         logEvent(localStorage, `next check set for ${formatTimeOfDay(targetTimeMs)} (alarm id ${alarmId})`)
       }
