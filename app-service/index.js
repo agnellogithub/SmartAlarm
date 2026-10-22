@@ -1,7 +1,6 @@
 import { Vibrator } from '@zos/sensor'
 import * as notification from '@zos/notification'
 import * as router from '@zos/router'
-import * as appService from '@zos/app-service'
 import { storage, logEvent, trace } from '../utils/index'
 
 // Trial service: learns what a background service may do when an alarm starts it on an idle watch.
@@ -33,47 +32,33 @@ AppService({
     const lateSec = dueMs ? Math.round((Date.now() - dueMs) / 1000) : 'n/a'
     logEvent(localStorage, `service started: params=${JSON.stringify(params)}, ${lateSec}s late`)
 
-    // 1. Vibrate for 3 s
-    let vibrator = null
-    attempt('vibrate start', () => {
-      vibrator = new Vibrator()
-      vibrator.start()
-    })
+    // Everything runs synchronously: in the +2 min test nothing scheduled with setTimeout ever ran,
+    // so the service appears to be stopped as soon as onInit returns.
 
-    // 2. Notification with an action that opens the app
+    // 1. Vibrate (no stop: a timer to stop it would never fire)
+    attempt('vibrate start', () => new Vibrator().start())
+
+    // 2. Notification; tapping its "Open" action opened the page in the +2 min test
     attempt('notify', () => notification.notify({
       title: 'Smart Wake test',
       content: 'Background service ran. Tap to open.',
       actions: [{ text: 'Open', file: PAGE_URL }]
     }))
 
-    setTimeout(() => {
-      attempt('vibrate stop', () => vibrator && vibrator.stop())
-
-      // 3. Open the app's page. This is the service's last log write: the page logs as soon as it opens,
-      // and two processes writing the log at once lost every earlier entry in the +2 min test.
-      if (typeof router.launchApp !== 'function') {
-        logEvent(localStorage, 'service launchApp: FAILED launchApp not available')
-      } else {
-        logEvent(localStorage, 'service launchApp: calling now (page should log params="from-service-test")')
-        try {
-          router.launchApp({ appId: APP_ID, url: PAGE_URL, params: 'from-service-test' })
-        } catch (e) {
-          // Logged to the console only, to keep clear of the page's log writes
-          trace(`launchApp threw: ${errText(e)}`)
-        }
+    // 3. Open the page directly. Last log write here: the page logs as soon as it opens,
+    // and two processes writing the log at once can lose entries.
+    if (typeof router.launchApp !== 'function') {
+      logEvent(localStorage, 'service launchApp: FAILED launchApp not available')
+    } else {
+      logEvent(localStorage, 'service launchApp: calling now (page should log params="from-service-test")')
+      try {
+        router.launchApp({ appId: APP_ID, url: PAGE_URL, params: 'from-service-test' })
+      } catch (e) {
+        // Console only, to keep clear of the page's log writes
+        trace(`launchApp threw: ${errText(e)}`)
       }
-
-      // 4. End the service (console only, same reason)
-      setTimeout(() => {
-        try {
-          if (typeof appService.exit === 'function') appService.exit()
-          else trace('exit not available')
-        } catch (e) {
-          trace(`exit threw: ${errText(e)}`)
-        }
-      }, 3000)
-    }, 3000)
+    }
+    trace('EXIT: AppService.onInit()')
   },
 
   onDestroy() {
