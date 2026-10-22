@@ -50,25 +50,33 @@ AppService({
     setTimeout(() => {
       attempt('vibrate stop', () => vibrator && vibrator.stop())
 
-      // 3. Open the app's page from the service (marked so the page can log that it came from here)
-      attempt('launchApp', () => {
-        if (typeof router.launchApp !== 'function') throw new Error('launchApp not available')
-        return router.launchApp({ appId: APP_ID, url: PAGE_URL, params: 'from-service-test' })
-      })
+      // 3. Open the app's page. This is the service's last log write: the page logs as soon as it opens,
+      // and two processes writing the log at once lost every earlier entry in the +2 min test.
+      if (typeof router.launchApp !== 'function') {
+        logEvent(localStorage, 'service launchApp: FAILED launchApp not available')
+      } else {
+        logEvent(localStorage, 'service launchApp: calling now (page should log params="from-service-test")')
+        try {
+          router.launchApp({ appId: APP_ID, url: PAGE_URL, params: 'from-service-test' })
+        } catch (e) {
+          // Logged to the console only, to keep clear of the page's log writes
+          trace(`launchApp threw: ${errText(e)}`)
+        }
+      }
 
-      // 4. End the service
+      // 4. End the service (console only, same reason)
       setTimeout(() => {
-        logEvent(localStorage, 'service finishing')
-        attempt('exit', () => {
-          if (typeof appService.exit !== 'function') throw new Error('exit not available')
-          return appService.exit()
-        })
+        try {
+          if (typeof appService.exit === 'function') appService.exit()
+          else trace('exit not available')
+        } catch (e) {
+          trace(`exit threw: ${errText(e)}`)
+        }
       }, 3000)
     }, 3000)
   },
 
   onDestroy() {
     trace('AppService.onDestroy()')
-    logEvent(localStorage, 'service destroyed')
   }
 })

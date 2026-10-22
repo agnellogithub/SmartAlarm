@@ -48,14 +48,36 @@ function pad(n, len = 2) {
   return String(n).padStart(len, '0')
 }
 
-function readEventLog(localStorage) {
+const EVENT_LOG_BACKUP_KEY = 'smart_wake_event_log_backup'
+
+// Returns { log, raw } where raw is set only when stored text exists but could not be read as a log
+function parseEventLog(raw) {
+  if (raw === undefined || raw === null || raw === '') return { log: [] }
+  if (Array.isArray(raw)) return { log: raw }
   try {
-    const raw = localStorage.getItem(EVENT_LOG_KEY)
-    const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed : []
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return { log: parsed }
   } catch (e) {
-    return []
+    // fall through: unreadable
   }
+  return { log: null, raw: String(raw) }
+}
+
+function readEventLog(localStorage) {
+  return parseEventLog(localStorage.getItem(EVENT_LOG_KEY)).log || []
+}
+
+// Reads the log for appending. A read that lands mid-write by another process (the background service
+// and the page both log) is retried; if still unreadable the raw text is kept as a backup, never discarded.
+function readEventLogForAppend(localStorage, stamp) {
+  let result = parseEventLog(localStorage.getItem(EVENT_LOG_KEY))
+  if (result.log) return result.log
+  result = parseEventLog(localStorage.getItem(EVENT_LOG_KEY))
+  if (result.log) return result.log
+  const previous = localStorage.getItem(EVENT_LOG_BACKUP_KEY)
+  localStorage.setItem(EVENT_LOG_BACKUP_KEY, `${previous ? `${previous}
+` : ''}[${stamp}] ${result.raw}`)
+  return [`${stamp} previous log unreadable (${result.raw.length} chars); saved to backup`]
 }
 
 // Appends one timestamped line, keeping only the newest EVENT_LOG_MAX lines
@@ -63,7 +85,7 @@ export function logEvent(localStorage, message) {
   try {
     const d = new Date()
     const stamp = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-    const log = readEventLog(localStorage)
+    const log = readEventLogForAppend(localStorage, stamp)
     log.push(`${stamp} ${message}`)
     if (log.length > EVENT_LOG_MAX) log.splice(0, log.length - EVENT_LOG_MAX)
     try {
@@ -99,6 +121,12 @@ export function dumpEventLog(localStorage) {
   const parts = []
   for (let i = 0; i < log.length; i += DUMP_ENTRIES_PER_LINE) {
     parts.push(log.slice(i, i + DUMP_ENTRIES_PER_LINE))
+  }
+  const backup = localStorage.getItem(EVENT_LOG_BACKUP_KEY)
+  if (backup) {
+    // Raw text of any log that could not be read, in chunks the viewer can show
+    const text = String(backup)
+    for (let i = 0; i < text.length; i += 600) parts.push([`BACKUP ${text.slice(i, i + 600)}`])
   }
   console.log(`[SMART_WAKE_EVENT] ===== Stored event log: ${log.length} entries in ${parts.length} parts, oldest first =====`)
 
