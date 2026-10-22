@@ -3,8 +3,8 @@ import { cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
 import { Vibrator } from '@zos/sensor'
 import { getDeviceInfo } from '@zos/device'
-import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, dumpEventLog } from '../../../utils/index'
-import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm } from '../../../utils/alarm'
+import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, formatDateTime, dumpEventLog } from '../../../utils/index'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm } from '../../../utils/alarm'
 
 const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -96,14 +96,17 @@ Page({
     stopLogDump: null
   },
 
+  onInit(params) {
+    // Records how the page was opened (e.g. 'from-service-test' when the service launched it)
+    logEvent(localStorage, `page onInit params=${JSON.stringify(params)}`)
+  },
+
   build() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.build() | Screen: ${DEVICE_WIDTH}x${DEVICE_HEIGHT}`)
     this.loadSavedConfig()
 
     // An alarm can reopen the page while the App is still running (App.onCreate not called), so check here too
     callApp('evaluateIfDue')
-    // Print the stored history so it shows up whenever the phone's log viewer is open
-    this.state.stopLogDump = dumpEventLog(localStorage)
 
     this.buildMainScreen()
     this.buildEditScreen()
@@ -112,6 +115,8 @@ Page({
     const firstScreen = this.isRingActive() ? 'ring' : 'main'
     logEvent(localStorage, `page opened on ${firstScreen} screen`)
     checkPendingAlarm(localStorage, 'page open')
+    // Print the stored history (including this open's entries) for the phone's log viewer
+    this.state.stopLogDump = dumpEventLog(localStorage)
     this.showScreen(firstScreen)
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.build()`)
   },
@@ -287,8 +292,25 @@ Page({
         this.saveTimeAndReturn()
       }
     })
-    // Bottom spacer so Done can scroll clear of a round screen's edge
-    container.createWidget(widget.FILL_RECT, { x: 0, y: y + 56, w: DEVICE_WIDTH, h: 70, color: 0x000000 })
+    // Trial: background-service test alarms
+    y += 84
+    label(y, 'Service test')
+    y += 34
+    const testButton = (x, minutes) => container.createWidget(widget.BUTTON, {
+      x, y, w: 130, h: 52, radius: 26,
+      normal_color: COLOR_GREY, press_color: COLOR_GREY_PRESS,
+      text: `+${minutes} min`, text_size: 22,
+      click_func: () => {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Service test +${minutes} min clicked.`)
+        const dueMs = placeServiceTestAlarm(localStorage, minutes)
+        showToast({ text: `Service test at ${formatClock(dueMs)}` })
+      }
+    })
+    testButton(CX - 140, 2)
+    testButton(CX + 10, 60)
+
+    // Bottom spacer so the last row can scroll clear of a round screen's edge
+    container.createWidget(widget.FILL_RECT, { x: 0, y: y + 52, w: DEVICE_WIDTH, h: 70, color: 0x000000 })
 
     this.state.editGroup = [container]
   },
@@ -512,10 +534,10 @@ Page({
     const alarmId = placeAlarm(localStorage, windowStart.getTime(), 'window start')
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] === MANUAL SCHEDULE VERIFICATION ===`)
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time  : ${now.toLocaleString()}`)
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Checks Start Time : ${windowStart.toLocaleString()} (Alarm ID: ${alarmId})`)
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Target Hard Limit : ${hardLimit.toLocaleString()}`)
-    logEvent(localStorage, `scheduled: checks ${windowStart.toLocaleString()}, target ${formatClock(hardLimit.getTime())} (alarm id ${alarmId})`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Current Date/Time  : ${formatDateTime(now)}`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Checks Start Time : ${formatDateTime(windowStart)} (Alarm ID: ${alarmId})`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Target Hard Limit : ${formatDateTime(hardLimit)}`)
+    logEvent(localStorage, `scheduled: checks ${formatDateTime(windowStart)}, target ${formatClock(hardLimit.getTime())} (alarm id ${alarmId})`)
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.scheduleAlarmService()`)
   },

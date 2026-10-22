@@ -1,5 +1,5 @@
 import * as zosAlarm from '@zos/alarm'
-import { getNextWakeWindow, readWindowMin, readSnoozeMin, logEvent, formatTimeOfDay, trace } from './index'
+import { getNextWakeWindow, readWindowMin, readSnoozeMin, logEvent, formatTimeOfDay, formatDateTime, trace } from './index'
 
 // Shared by App and Page so the page never depends on reaching App methods through getApp()
 
@@ -25,7 +25,7 @@ export function checkPendingAlarm(localStorage, context) {
   const dueMs = Number(localStorage.getItem('smart_wake_next_alarm_ms'))
   const pending = getPendingAlarmIds()
   const present = pending === null ? 'unknown' : (expectedId && pending.includes(expectedId) ? 'yes' : 'NO')
-  logEvent(localStorage, `${context}: expect alarm ${expectedId || 'none'} due ${dueMs ? new Date(dueMs).toLocaleString() : 'n/a'}, pending=${present}, system alarms=${pending === null ? 'n/a' : JSON.stringify(pending)}`)
+  logEvent(localStorage, `${context}: expect alarm ${expectedId || 'none'} due ${dueMs ? formatDateTime(new Date(dueMs)) : 'n/a'}, pending=${present}, system alarms=${pending === null ? 'n/a' : JSON.stringify(pending)}`)
 }
 
 // Sets the one alarm this app relies on. store: true keeps it across a watch restart.
@@ -40,6 +40,23 @@ export function placeAlarm(localStorage, timeMs, reason) {
   localStorage.setItem('smart_wake_next_alarm_ms', String(timeSec * 1000))
   checkPendingAlarm(localStorage, `alarm set (${reason})`)
   return alarmId
+}
+
+// Trial: an alarm that starts the background service instead of the page (does not touch the wake alarm)
+export const SERVICE_URL = 'app-service/index'
+
+export function placeServiceTestAlarm(localStorage, minutesAhead) {
+  const oldId = Number(localStorage.getItem('smart_wake_test_alarm_id'))
+  if (oldId) {
+    try { zosAlarm.cancel(oldId) } catch (e) { trace(`cancel old test alarm failed: ${e && e.message ? e.message : e}`) }
+  }
+  const dueMs = (Math.floor(Date.now() / 1000) + minutesAhead * 60) * 1000
+  const alarmId = zosAlarm.set({ url: SERVICE_URL, time: dueMs / 1000, store: true, param: 'service-test' })
+  localStorage.setItem('smart_wake_test_alarm_id', String(alarmId))
+  localStorage.setItem('smart_wake_test_due_ms', String(dueMs))
+  const pending = getPendingAlarmIds()
+  logEvent(localStorage, `service test alarm ${alarmId} set for ${formatDateTime(dueMs)} (+${minutesAhead} min), pending=${pending === null ? 'unknown' : (pending.includes(Number(alarmId)) ? 'yes' : 'NO')}`)
+  return dueMs
 }
 
 export function cancelExistingAlarm(localStorage) {
@@ -84,8 +101,8 @@ export function scheduleNextDayAlarm(localStorage) {
 
     const alarmId = placeAlarm(localStorage, windowStart.getTime(), 'next day window start')
 
-    trace(`=== NEXT DAY ROLLOVER SUCCESS === Checks Start: ${windowStart.toLocaleString()} (Alarm ID: ${alarmId}), Target Hard Limit: ${hardLimit.toLocaleString()}`)
-    logEvent(localStorage, `next day scheduled: checks ${windowStart.toLocaleString()}, target ${formatTimeOfDay(hardLimit.getTime())} (alarm id ${alarmId})`)
+    trace(`=== NEXT DAY ROLLOVER SUCCESS === Checks Start: ${formatDateTime(windowStart)} (Alarm ID: ${alarmId}), Target Hard Limit: ${formatDateTime(hardLimit)}`)
+    logEvent(localStorage, `next day scheduled: checks ${formatDateTime(windowStart)}, target ${formatTimeOfDay(hardLimit.getTime())} (alarm id ${alarmId})`)
   } catch (e) {
     trace(`Reschedule next day exception: ${e && e.message ? e.message : e}`)
     logEvent(localStorage, `next day schedule error: ${e && e.message ? e.message : e}`)
@@ -95,7 +112,7 @@ export function scheduleNextDayAlarm(localStorage) {
 
 // Remembers the ring so snoozeAlarm() can restore today's window after the next-day rollover
 export function recordRing(localStorage, hardLimitMs) {
-  trace(`recordRing() | Hard Limit: ${hardLimitMs ? new Date(hardLimitMs).toLocaleString() : 'N/A'}`)
+  trace(`recordRing() | Hard Limit: ${hardLimitMs ? formatDateTime(new Date(hardLimitMs)) : 'N/A'}`)
   localStorage.setItem('smart_wake_rang_at_ms', String(Date.now()))
   localStorage.setItem('smart_wake_rang_hard_limit_ms', String(hardLimitMs || Date.now()))
 }
@@ -115,7 +132,7 @@ export function snoozeAlarm(localStorage) {
     const rangAtMs = Number(localStorage.getItem('smart_wake_rang_at_ms'))
     const rangHardLimitMs = Number(localStorage.getItem('smart_wake_rang_hard_limit_ms'))
 
-    trace(`Snooze Check -> Rang At: ${rangAtMs ? new Date(rangAtMs).toLocaleString() : 'N/A'}, Rang Hard Limit: ${rangHardLimitMs ? new Date(rangHardLimitMs).toLocaleString() : 'N/A'}`)
+    trace(`Snooze Check -> Rang At: ${rangAtMs ? formatDateTime(new Date(rangAtMs)) : 'N/A'}, Rang Hard Limit: ${rangHardLimitMs ? formatDateTime(new Date(rangHardLimitMs)) : 'N/A'}`)
 
     if (!isRingPending(localStorage)) {
       trace('No recent ring found. Nothing to snooze.')
@@ -142,7 +159,7 @@ export function snoozeAlarm(localStorage) {
     // Clearing the pending ring also stops the App's vibration loop
     localStorage.removeItem('smart_wake_rang_at_ms')
 
-    trace(`Snoozed -> Next Check: ${new Date(snoozeUntilMs).toLocaleString()} (Alarm ID: ${alarmId}), Hard Limit: ${new Date(newHardLimitMs).toLocaleString()}`)
+    trace(`Snoozed -> Next Check: ${formatDateTime(new Date(snoozeUntilMs))} (Alarm ID: ${alarmId}), Hard Limit: ${formatDateTime(new Date(newHardLimitMs))}`)
     logEvent(localStorage, `snoozed until ${formatTimeOfDay(snoozeUntilMs)}, hard limit ${formatTimeOfDay(newHardLimitMs)} (alarm id ${alarmId})`)
   } catch (e) {
     trace(`Snooze exception: ${e && e.message ? e.message : e}`)

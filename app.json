@@ -18,7 +18,8 @@
     "data:user.hd.sleep",
     "data:user.hd.heart_rate",
     "device:os.alarm",
-    "device:os.notification"
+    "device:os.notification",
+    "device:os.bg_service"
   ],
   "runtime": {
     "apiVersion": {
@@ -34,6 +35,11 @@
         "page": {
           "pages": [
             "page/gt/home/index.page"
+          ]
+        },
+        "app-service": {
+          "services": [
+            "app-service/index"
           ]
         }
       },

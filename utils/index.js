@@ -122,6 +122,12 @@ export function dumpEventLog(localStorage) {
   }
 }
 
+// YYYY-MM-DD HH:MM:SS; the watch's toLocaleString() mangles hours (11:23 AM printed as "-1:23:11 AM")
+export function formatDateTime(dateOrMs) {
+  const d = dateOrMs instanceof Date ? dateOrMs : new Date(Number(dateOrMs))
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 // HH:MM:SS for event log messages
 export function formatTimeOfDay(ms) {
   const d = new Date(Number(ms))

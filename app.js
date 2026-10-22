@@ -1,6 +1,6 @@
 import { Sleep, Vibrator, HeartRate } from '@zos/sensor'
 import { showToast } from '@zos/interaction'
-import { logEvent, formatTimeOfDay, storage, readCheckMin } from './utils/index'
+import { logEvent, formatTimeOfDay, formatDateTime, storage, readCheckMin } from './utils/index'
 import { cancelExistingAlarm, scheduleNextDayAlarm, recordRing, isRingPending, snoozeAlarm, placeAlarm } from './utils/alarm'
 
 const localStorage = storage
@@ -50,7 +50,7 @@ App({
     const isInAlarmWindow = startMs && hardLimitMs && (nowMs >= startMs && nowMs <= hardLimitMs + 5 * 60 * 1000)
 
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] onCreate Check -> isAlarmLaunch: ${isAlarmLaunch}, isInAlarmWindow: ${isInAlarmWindow}`)
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Window State -> Start: ${startMs ? new Date(startMs).toLocaleString() : 'N/A'}, Target/Hard Limit: ${hardLimitMs ? new Date(hardLimitMs).toLocaleString() : 'N/A'}, Current: ${new Date(nowMs).toLocaleString()}`)
+    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Window State -> Start: ${startMs ? formatDateTime(new Date(startMs)) : 'N/A'}, Target/Hard Limit: ${hardLimitMs ? formatDateTime(new Date(hardLimitMs)) : 'N/A'}, Current: ${formatDateTime(new Date(nowMs))}`)
 
     // Skip if App.onCreate and the page both ask within moments of each other
     const lastEvalMs = Number(localStorage.getItem('smart_wake_last_eval_ms'))
@@ -93,7 +93,7 @@ App({
       const hardLimitMs = Number(localStorage.getItem('smart_wake_hard_limit_ms'))
       const nowMs = Date.now()
 
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Time Boundary Check -> Current: ${new Date(nowMs).toLocaleString()}, Target Hard Limit: ${new Date(hardLimitMs).toLocaleString()}`)
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Time Boundary Check -> Current: ${formatDateTime(new Date(nowMs))}, Target Hard Limit: ${formatDateTime(new Date(hardLimitMs))}`)
 
       // 1. HARD ALARM LIMIT CHECK (Target Time Reached)
       // Tolerance: the alarm may fire a moment before the exact hard limit
@@ -204,7 +204,7 @@ App({
         // Never schedule closer than the minimum lead, or the alarm can land in the past and never fire
         const targetTimeMs = Math.max(cappedMs, nowMs + MIN_ALARM_LEAD_MS)
 
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] NON-OPTIMAL STAGE ACTIVE (${stageName}) -> Scheduling next ${checkMin}-min check for: ${new Date(targetTimeMs).toLocaleString()}`)
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] NON-OPTIMAL STAGE ACTIVE (${stageName}) -> Scheduling next ${checkMin}-min check for: ${formatDateTime(new Date(targetTimeMs))}`)
 
         this.cancelExistingAlarm()
 
