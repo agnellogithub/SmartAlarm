@@ -1,14 +1,16 @@
-import { Vibrator } from '@zos/sensor'
+import * as sensor from '@zos/sensor'
 import * as notification from '@zos/notification'
 import * as router from '@zos/router'
 import { storage, logEvent, trace } from '../utils/index'
+import { ALARM_PAGE_URL } from '../utils/alarm'
+import { runWakeCheck } from '../utils/wakecheck'
 
-// Trial service: learns what a background service may do when an alarm starts it on an idle watch.
-// Each attempt is written to the persistent event log, since nobody is watching the phone when it runs.
+// Every wake alarm starts this service. It runs one wake check silently and, when it is time to wake,
+// buzzes once, posts a notification and opens the ring screen (which keeps vibrating).
+// Tested on device: the service is stopped as soon as onInit returns, so nothing here may use timers.
 
 const localStorage = storage
 const APP_ID = 1131497
-const PAGE_URL = 'page/gt/home/index.page'
 
 function errText(e) {
   return e && e.message ? e.message : String(e)
@@ -25,38 +27,62 @@ function attempt(label, fn) {
   }
 }
 
+// One strong buzz; the ring screen takes over with a repeating pattern once it opens
+function buzz() {
+  const vibrator = new sensor.Vibrator()
+  const scene = sensor.VIBRATOR_SCENE_STRONG_REMINDER
+  if (scene !== undefined && typeof vibrator.setMode === 'function') vibrator.setMode(scene)
+  vibrator.start()
+}
+
+// Opens the page. Must be the last log write: the page logs as soon as it opens,
+// and two processes writing the log at once can lose entries.
+function openPage(params) {
+  if (typeof router.launchApp !== 'function') {
+    logEvent(localStorage, 'service launchApp: FAILED launchApp not available')
+    return
+  }
+  logEvent(localStorage, `service launchApp: opening page (params="${params}")`)
+  try {
+    router.launchApp({ appId: APP_ID, url: ALARM_PAGE_URL, params })
+  } catch (e) {
+    // Console only, to keep clear of the page's log writes
+    trace(`launchApp threw: ${errText(e)}`)
+  }
+}
+
+function ring(reason) {
+  attempt('buzz', buzz)
+  attempt('notify', () => notification.notify({
+    title: 'Smart Wake',
+    content: `Time to wake up (${reason}). Tap Open to snooze or dismiss.`,
+    actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
+  }))
+  openPage('ring')
+}
+
+// Trial path kept for the edit screen's "Service test" buttons
+function runServiceTest() {
+  const dueMs = Number(localStorage.getItem('smart_wake_test_due_ms'))
+  const lateSec = dueMs ? Math.round((Date.now() - dueMs) / 1000) : 'n/a'
+  logEvent(localStorage, `service test started: ${lateSec}s late`)
+  attempt('buzz', buzz)
+  attempt('notify', () => notification.notify({
+    title: 'Smart Wake test',
+    content: 'Background service ran. Tap to open.',
+    actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
+  }))
+  openPage('from-service-test')
+}
+
 AppService({
   onInit(params) {
     trace(`ENTER: AppService.onInit() | params: ${JSON.stringify(params)}`)
-    const dueMs = Number(localStorage.getItem('smart_wake_test_due_ms'))
-    const lateSec = dueMs ? Math.round((Date.now() - dueMs) / 1000) : 'n/a'
-    logEvent(localStorage, `service started: params=${JSON.stringify(params)}, ${lateSec}s late`)
-
-    // Everything runs synchronously: in the +2 min test nothing scheduled with setTimeout ever ran,
-    // so the service appears to be stopped as soon as onInit returns.
-
-    // 1. Vibrate (no stop: a timer to stop it would never fire)
-    attempt('vibrate start', () => new Vibrator().start())
-
-    // 2. Notification; tapping its "Open" action opened the page in the +2 min test
-    attempt('notify', () => notification.notify({
-      title: 'Smart Wake test',
-      content: 'Background service ran. Tap to open.',
-      actions: [{ text: 'Open', file: PAGE_URL }]
-    }))
-
-    // 3. Open the page directly. Last log write here: the page logs as soon as it opens,
-    // and two processes writing the log at once can lose entries.
-    if (typeof router.launchApp !== 'function') {
-      logEvent(localStorage, 'service launchApp: FAILED launchApp not available')
+    if (String(params) === 'service-test') {
+      runServiceTest()
     } else {
-      logEvent(localStorage, 'service launchApp: calling now (page should log params="from-service-test")')
-      try {
-        router.launchApp({ appId: APP_ID, url: PAGE_URL, params: 'from-service-test' })
-      } catch (e) {
-        // Console only, to keep clear of the page's log writes
-        trace(`launchApp threw: ${errText(e)}`)
-      }
+      const result = runWakeCheck(localStorage)
+      if (result.ring) ring(result.reason)
     }
     trace('EXIT: AppService.onInit()')
   },

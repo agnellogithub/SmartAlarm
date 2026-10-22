@@ -1,9 +1,13 @@
 import * as zosAlarm from '@zos/alarm'
 import { getNextWakeWindow, readWindowMin, readSnoozeMin, logEvent, formatTimeOfDay, formatDateTime, trace } from './index'
 
-// Shared by App and Page so the page never depends on reaching App methods through getApp()
+// Shared by the page and the background service
 
 export const ALARM_PAGE_URL = 'page/gt/home/index.page'
+// Alarms start the background service: alarms that opened the page directly fired but never opened it
+// once the watch had been idle (14:35 test, two mornings); the service started on time after 60 min idle.
+export const SERVICE_URL = 'app-service/index'
+export const WAKE_CHECK_PARAM = 'wake-check'
 // Snooze is only offered for a ring within this long
 export const SNOOZE_MAX_AGE_MS = 30 * 60 * 1000
 
@@ -32,9 +36,10 @@ export function checkPendingAlarm(localStorage, context) {
 export function placeAlarm(localStorage, timeMs, reason) {
   const timeSec = Math.floor(timeMs / 1000)
   const alarmId = zosAlarm.set({
-    url: ALARM_PAGE_URL,
+    url: SERVICE_URL,
     time: timeSec,
-    store: true
+    store: true,
+    param: WAKE_CHECK_PARAM
   })
   localStorage.setItem('smart_wake_alarm_id', String(alarmId))
   localStorage.setItem('smart_wake_next_alarm_ms', String(timeSec * 1000))
@@ -43,8 +48,6 @@ export function placeAlarm(localStorage, timeMs, reason) {
 }
 
 // Trial: an alarm that starts the background service instead of the page (does not touch the wake alarm)
-export const SERVICE_URL = 'app-service/index'
-
 export function placeServiceTestAlarm(localStorage, minutesAhead) {
   const oldId = Number(localStorage.getItem('smart_wake_test_alarm_id'))
   if (oldId) {

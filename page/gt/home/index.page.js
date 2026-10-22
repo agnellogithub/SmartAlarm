@@ -1,7 +1,8 @@
 import { createWidget, widget, prop, align } from '@zos/ui'
 import { cancel } from '@zos/alarm'
 import { showToast } from '@zos/interaction'
-import { Vibrator } from '@zos/sensor'
+import * as sensor from '@zos/sensor'
+import * as display from '@zos/display'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, formatDateTime, dumpEventLog } from '../../../utils/index'
 import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm } from '../../../utils/alarm'
@@ -32,23 +33,6 @@ function getLogTime() {
   return `${h}:${m}:${s}.${ms}`
 }
 
-// App methods may live on getApp() or getApp()._options depending on the runtime
-function callApp(method) {
-  try {
-    const app = getApp()
-    const target = app && typeof app[method] === 'function' ? app : app && app._options
-    if (target && typeof target[method] === 'function') {
-      return target[method]()
-    }
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] callApp: method "${method}" not found on app instance`)
-    logEvent(localStorage, `callApp: ${method} not found on app instance`)
-  } catch (e) {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] callApp(${method}) exception:`, e)
-    logEvent(localStorage, `callApp(${method}) error: ${e && e.message ? e.message : e}`)
-  }
-  return undefined
-}
-
 function pad2(n) {
   return n < 10 ? `0${n}` : `${n}`
 }
@@ -58,14 +42,10 @@ function formatClock(ms) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 }
 
-// Stops the motor from the page itself; the App's vibration loop also stops once the ring is cleared
-function stopMotor() {
-  try {
-    new Vibrator().stop()
-  } catch (e) {
-    console.log(`[SMART_WAKE_TRACE ${getLogTime()}] stopMotor exception:`, e)
-  }
-}
+// The ring screen owns the alarm vibration: the background service can only buzz once before it is stopped
+const RING_PULSE_INTERVAL_MS = 3000
+// Stop buzzing after this long even if nobody responds (the screen stays on the ring view)
+const RING_VIBRATION_MAX_MS = 5 * 60 * 1000
 
 function setGroupVisible(group, visible) {
   group.forEach(w => w.setProperty(prop.VISIBLE, visible))
@@ -93,6 +73,8 @@ Page({
     editSnoozeWidget: null,
     ringClockWidget: null,
     ringClockTimer: null,
+    ringVibrator: null,
+    ringVibrationTimer: null,
     stopLogDump: null
   },
 
@@ -104,9 +86,6 @@ Page({
   build() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.build() | Screen: ${DEVICE_WIDTH}x${DEVICE_HEIGHT}`)
     this.loadSavedConfig()
-
-    // An alarm can reopen the page while the App is still running (App.onCreate not called), so check here too
-    callApp('evaluateIfDue')
 
     this.buildMainScreen()
     this.buildEditScreen()
@@ -124,6 +103,7 @@ Page({
   onDestroy() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.onDestroy()`)
     this.stopRingClock()
+    this.stopRingVibration('page closed')
     if (this.state.stopLogDump) this.state.stopLogDump()
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EXIT: Page.onDestroy()`)
   },
@@ -357,8 +337,10 @@ Page({
 
     if (screen === 'ring') {
       this.startRingClock()
+      this.startRingVibration()
     } else {
       this.stopRingClock()
+      this.stopRingVibration('left ring screen')
     }
 
     if (screen === 'edit') this.updateEditDisplay()
@@ -384,6 +366,55 @@ Page({
     if (this.state.ringClockTimer) {
       clearInterval(this.state.ringClockTimer)
       this.state.ringClockTimer = null
+    }
+  },
+
+  // Repeating strong pulses until Snooze/Dismiss, capped at RING_VIBRATION_MAX_MS
+  startRingVibration() {
+    if (this.state.ringVibrationTimer) return
+    this.keepScreenOn()
+    try {
+      const vibrator = new sensor.Vibrator()
+      const scene = sensor.VIBRATOR_SCENE_STRONG_REMINDER
+      if (scene !== undefined && typeof vibrator.setMode === 'function') vibrator.setMode(scene)
+      vibrator.start()
+      this.state.ringVibrator = vibrator
+      const startedMs = Date.now()
+      logEvent(localStorage, `ring vibration started (scene=${scene !== undefined ? scene : 'default'})`)
+      this.state.ringVibrationTimer = setInterval(() => {
+        if (Date.now() - startedMs >= RING_VIBRATION_MAX_MS) {
+          this.stopRingVibration(`${RING_VIBRATION_MAX_MS / 60000} min limit`)
+          return
+        }
+        vibrator.start()
+      }, RING_PULSE_INTERVAL_MS)
+    } catch (e) {
+      logEvent(localStorage, `ring vibration error: ${e && e.message ? e.message : e}`)
+    }
+  },
+
+  stopRingVibration(reason) {
+    if (!this.state.ringVibrationTimer && !this.state.ringVibrator) return
+    if (this.state.ringVibrationTimer) {
+      clearInterval(this.state.ringVibrationTimer)
+      this.state.ringVibrationTimer = null
+    }
+    try {
+      if (this.state.ringVibrator) this.state.ringVibrator.stop()
+    } catch (e) {
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] vibrator stop exception:`, e)
+    }
+    this.state.ringVibrator = null
+    logEvent(localStorage, `ring vibration stopped: ${reason}`)
+  },
+
+  // Keeps the display awake while ringing, where the watch supports it
+  keepScreenOn() {
+    try {
+      if (typeof display.setPageBrightTime === 'function') display.setPageBrightTime({ brightTime: RING_VIBRATION_MAX_MS })
+      if (typeof display.pauseDropWristScreenOff === 'function') display.pauseDropWristScreenOff({ duration: RING_VIBRATION_MAX_MS })
+    } catch (e) {
+      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] keepScreenOn exception:`, e)
     }
   },
 
@@ -454,14 +485,13 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.dismissAlarm()`)
     logEvent(localStorage, 'dismiss pressed')
     try {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Invoking getApp().stopVibration()...`)
-      stopMotor()
+      this.stopRingVibration('dismiss')
       // A dismissed ring can no longer be snoozed
       localStorage.removeItem('smart_wake_rang_at_ms')
 
       // EXPLICIT CHECK: If alarm is actively enabled, ensure tomorrow's alarm is locked in
       if (this.state.enabled) {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm is active -> Invoking getApp().scheduleNextDayAlarm() from dismiss action...`)
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm is active -> scheduling next day's alarm from dismiss action...`)
         scheduleNextDayAlarm(localStorage)
       }
     } catch (e) {
@@ -473,6 +503,7 @@ Page({
   snoozeAlarm() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.snoozeAlarm()`)
     logEvent(localStorage, 'snooze pressed')
+    this.stopRingVibration('snooze')
     if (!this.state.enabled) {
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Alarm disabled. Nothing to snooze.`)
       showToast({ text: 'Alarm is off' })
@@ -490,7 +521,7 @@ Page({
 
   toggleAlarm() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.toggleAlarm()`)
-    stopMotor()
+    this.stopRingVibration('alarm toggled')
 
     this.state.enabled = !this.state.enabled
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] New Alarm State: ${this.state.enabled}`)
@@ -546,7 +577,7 @@ Page({
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.cancelAlarmService()`)
     try {
       // Only stop the motor here; dismissAlarm() would schedule a new alarm while we cancel
-      stopMotor()
+      this.stopRingVibration('alarm cancelled')
 
       const activeAlarmId = localStorage.getItem('smart_wake_alarm_id')
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] Active Alarm ID read from storage: ${activeAlarmId}`)
