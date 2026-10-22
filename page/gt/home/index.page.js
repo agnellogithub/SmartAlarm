@@ -75,6 +75,8 @@ Page({
     ringClockTimer: null,
     ringVibrator: null,
     ringVibrationTimer: null,
+    ringPulses: 0,
+    ringStartedMs: 0,
     stopLogDump: null
   },
 
@@ -102,6 +104,7 @@ Page({
 
   onDestroy() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.onDestroy()`)
+    logEvent(localStorage, `page closed (was on ${this.state.screen} screen)`)
     this.stopRingClock()
     this.stopRingVibration('page closed')
     if (this.state.stopLogDump) this.state.stopLogDump()
@@ -380,6 +383,8 @@ Page({
       vibrator.start()
       this.state.ringVibrator = vibrator
       const startedMs = Date.now()
+      this.state.ringPulses = 1
+      this.state.ringStartedMs = startedMs
       logEvent(localStorage, `ring vibration started (scene=${scene !== undefined ? scene : 'default'})`)
       this.state.ringVibrationTimer = setInterval(() => {
         if (Date.now() - startedMs >= RING_VIBRATION_MAX_MS) {
@@ -387,6 +392,7 @@ Page({
           return
         }
         vibrator.start()
+        this.state.ringPulses++
       }, RING_PULSE_INTERVAL_MS)
     } catch (e) {
       logEvent(localStorage, `ring vibration error: ${e && e.message ? e.message : e}`)
@@ -405,7 +411,9 @@ Page({
       console.log(`[SMART_WAKE_TRACE ${getLogTime()}] vibrator stop exception:`, e)
     }
     this.state.ringVibrator = null
-    logEvent(localStorage, `ring vibration stopped: ${reason}`)
+    // Pulse count and duration show whether the timer kept running while the display was off
+    const secs = this.state.ringStartedMs ? Math.round((Date.now() - this.state.ringStartedMs) / 1000) : 0
+    logEvent(localStorage, `ring vibration stopped: ${reason} after ${this.state.ringPulses} pulses in ${secs}s (expected ~${Math.floor(secs * 1000 / RING_PULSE_INTERVAL_MS) + 1})`)
   },
 
   // Keeps the display awake while ringing, where the watch supports it
