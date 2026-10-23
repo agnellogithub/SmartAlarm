@@ -4,7 +4,7 @@ import * as router from '@zos/router'
 import { storage, logEvent, trace } from '../utils/index'
 import {
   ALARM_PAGE_URL, isRingPending, continueBuzzChain, readBuzzChain,
-  RING_BUZZ_MAX, TEST_BUZZ_MAX, RING_REPEAT_PARAM, TEST_REPEAT_PARAM
+  RING_BUZZ_MAX, TEST_BUZZ_MAX, RING_REPEAT_PARAM, TEST_REPEAT_PARAM, BUZZ_INTERVAL_SEC
 } from '../utils/alarm'
 import { runWakeCheck } from '../utils/wakecheck'
 
@@ -95,7 +95,7 @@ function runServiceTest() {
   attempt('buzz', buzz)
   attempt('notify', () => notification.notify({
     title: 'Smart Wake test',
-    content: `Background service ran. Expect ${TEST_BUZZ_MAX} buzzes, 15 s apart.`,
+    content: `Background service ran. Expect ${TEST_BUZZ_MAX} buzzes, ${BUZZ_INTERVAL_SEC} s apart.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
   attempt('buzz chain start', () => continueBuzzChain(localStorage, 'test', 1, TEST_BUZZ_MAX).alarmId)

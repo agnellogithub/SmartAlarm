@@ -52,9 +52,11 @@ export function placeAlarm(localStorage, timeMs, reason) {
 // The service is stopped as soon as onInit returns (even with the watch's background setting on), so it
 // buzzes only once per start. A ring is therefore a chain of short alarms, each starting the service
 // for one buzz and setting the next, until Snooze/Dismiss or the limit.
-export const BUZZ_INTERVAL_SEC = 15
-export const RING_BUZZ_MAX = 20
-export const TEST_BUZZ_MAX = 5
+// Untested how closely the watch fires alarms; the chain records its start so the real average gap shows
+export const BUZZ_INTERVAL_SEC = 3
+// 5 min of buzzing
+export const RING_BUZZ_MAX = 100
+export const TEST_BUZZ_MAX = 10
 export const RING_REPEAT_PARAM = 'ring-repeat'
 export const TEST_REPEAT_PARAM = 'test-repeat'
 // Chain progress lives in its own key: the service writes it while the page may be writing the event log
@@ -71,7 +73,9 @@ export function readBuzzChain(localStorage) {
 
 // Records one buzz and, unless the chain is done, sets the alarm for the next one
 export function continueBuzzChain(localStorage, kind, count, max) {
-  const chain = { kind, count, lastMs: Date.now(), max, alarmId: null, ended: count >= max }
+  const previous = count > 1 ? readBuzzChain(localStorage) : null
+  const startMs = previous && previous.startMs ? previous.startMs : Date.now()
+  const chain = { kind, count, startMs, lastMs: Date.now(), max, alarmId: null, ended: count >= max }
   if (!chain.ended) {
     const timeSec = Math.floor(Date.now() / 1000) + BUZZ_INTERVAL_SEC
     chain.alarmId = zosAlarm.set({
