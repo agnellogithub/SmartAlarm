@@ -5,7 +5,7 @@ import * as sensor from '@zos/sensor'
 import * as display from '@zos/display'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, formatDateTime, dumpEventLog } from '../../../utils/index'
-import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm, readBuzzChain, endBuzzChain } from '../../../utils/alarm'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm, endBuzzChain } from '../../../utils/alarm'
 
 const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -96,13 +96,6 @@ Page({
     const firstScreen = this.isRingActive() ? 'ring' : 'main'
     logEvent(localStorage, `page opened on ${firstScreen} screen`)
     checkPendingAlarm(localStorage, 'page open')
-    // How far the last buzz chain got (each buzz is a separate alarm-started service run)
-    const chain = readBuzzChain(localStorage)
-    if (chain) {
-      // Average gap shows how closely the watch actually fires back-to-back alarms
-      const avgGapSec = chain.count > 1 && chain.startMs ? ((chain.lastMs - chain.startMs) / 1000 / (chain.count - 1)).toFixed(1) : 'n/a'
-      logEvent(localStorage, `last buzz chain (${chain.kind}): ${chain.count}/${chain.max} buzzes, avg gap ${avgGapSec}s, last at ${formatDateTime(chain.lastMs)}, ${chain.ended ? `ended${chain.endReason ? ` (${chain.endReason})` : ''}` : `next alarm ${chain.alarmId}`}, link starts ${chain.linkStarts || 1}${chain.lastLinkStartMs ? ` (last ${formatDateTime(chain.lastLinkStartMs)})` : ''}${chain.lastError ? `, error: ${chain.lastError}` : ''}`)
-    }
     // Print the stored history (including this open's entries) for the phone's log viewer
     this.state.stopLogDump = dumpEventLog(localStorage)
     this.showScreen(firstScreen)

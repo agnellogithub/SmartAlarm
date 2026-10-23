@@ -3,8 +3,8 @@ import * as notification from '@zos/notification'
 import * as router from '@zos/router'
 import { storage, logEvent, trace } from '../utils/index'
 import {
-  ALARM_PAGE_URL, isRingPending, continueBuzzChain, readBuzzChain, markBuzzLinkStarted, recordBuzzChainError,
-  RING_BUZZ_MAX, TEST_BUZZ_MAX, RING_REPEAT_PARAM, TEST_REPEAT_PARAM, BUZZ_INTERVAL_SEC
+  ALARM_PAGE_URL, isRingPending, parseChainParam, scheduleBuzzLink,
+  RING_BUZZ_MAX, TEST_BUZZ_MAX, BUZZ_INTERVAL_SEC
 } from '../utils/alarm'
 import { runWakeCheck } from '../utils/wakecheck'
 
@@ -63,21 +63,16 @@ function ring(reason) {
     content: `Time to wake up (${reason}). Tap Open to snooze or dismiss.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
-  attempt('buzz chain start', () => continueBuzzChain(localStorage, 'ring', 1, RING_BUZZ_MAX).alarmId)
+  attempt('buzz chain start', () => scheduleBuzzLink('ring', 2))
   openPage('ring')
 }
 
-// A later link in the chain: buzz once more and set the next link. Writes only the chain key,
-// never the event log, since the page may be open and logging at the same moment.
-function continueChain(kind, max, stillWanted) {
-  markBuzzLinkStarted(localStorage)
-  const chain = readBuzzChain(localStorage)
-  if (!chain || chain.ended || chain.kind !== kind) {
-    trace(`buzz chain (${kind}) already ended`)
-    return
-  }
-  if (!stillWanted()) {
-    localStorage.setItem('smart_wake_buzz_chain', JSON.stringify(Object.assign({}, chain, { ended: true, endReason: 'ring cleared' })))
+// A later link in the chain: buzz once more and set the next link.
+// Writes nothing to storage (see the buzz chain notes in utils/alarm.js); console traces only.
+function runChainLink({ kind, count }) {
+  const max = kind === 'ring' ? RING_BUZZ_MAX : TEST_BUZZ_MAX
+  if (kind === 'ring' && !isRingPending(localStorage)) {
+    trace(`buzz chain (ring) link ${count}: ring cleared, stopping`)
     return
   }
   try {
@@ -85,10 +80,15 @@ function continueChain(kind, max, stillWanted) {
   } catch (e) {
     trace(`chain buzz threw: ${errText(e)}`)
   }
+  if (count >= max) {
+    trace(`buzz chain (${kind}) link ${count}/${max}: last one`)
+    return
+  }
   try {
-    continueBuzzChain(localStorage, kind, chain.count + 1, max)
+    const alarmId = scheduleBuzzLink(kind, count + 1)
+    trace(`buzz chain (${kind}) link ${count}/${max}: next link alarm ${alarmId}`)
   } catch (e) {
-    recordBuzzChainError(localStorage, `next link: ${errText(e)}`)
+    trace(`buzz chain (${kind}) link ${count}: scheduling next failed: ${errText(e)}`)
   }
 }
 
@@ -103,19 +103,18 @@ function runServiceTest() {
     content: `Background service ran. Expect ${TEST_BUZZ_MAX} buzzes, ${BUZZ_INTERVAL_SEC} s apart.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
-  attempt('buzz chain start', () => continueBuzzChain(localStorage, 'test', 1, TEST_BUZZ_MAX).alarmId)
+  attempt('buzz chain start', () => scheduleBuzzLink('test', 2))
 }
 
 AppService({
   onInit(params) {
     trace(`ENTER: AppService.onInit() | params: ${JSON.stringify(params)}`)
     const param = String(params)
-    if (param === 'service-test') {
+    const chainLink = parseChainParam(param)
+    if (chainLink) {
+      runChainLink(chainLink)
+    } else if (param === 'service-test') {
       runServiceTest()
-    } else if (param === TEST_REPEAT_PARAM) {
-      continueChain('test', TEST_BUZZ_MAX, () => true)
-    } else if (param === RING_REPEAT_PARAM) {
-      continueChain('ring', RING_BUZZ_MAX, () => isRingPending(localStorage))
     } else {
       const result = runWakeCheck(localStorage)
       if (result.ring) ring(result.reason)

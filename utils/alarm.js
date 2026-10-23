@@ -52,74 +52,50 @@ export function placeAlarm(localStorage, timeMs, reason) {
 // The service is stopped as soon as onInit returns (even with the watch's background setting on), so it
 // buzzes only once per start. A ring is therefore a chain of short alarms, each starting the service
 // for one buzz and setting the next, until Snooze/Dismiss or the limit.
-// A 3 s gap stopped the chain after the first buzz (10-23 12:00: the second alarm vanished without running).
+// 10-23 tests: at a 3 s gap the next alarm vanished without running; at 10 s it ran, but the app's saved
+// data (event log, chain record, test alarm entry) was wiped between the two runs. So links write nothing:
+// each link's number travels in the alarm param ("ring-repeat:7"), and only console traces record progress.
 // One "strong reminder" buzz itself lasts several seconds, so 10 s still feels close to continuous.
 export const BUZZ_INTERVAL_SEC = 10
 // 5 min of buzzing
 export const RING_BUZZ_MAX = 30
 export const TEST_BUZZ_MAX = 5
-export const RING_REPEAT_PARAM = 'ring-repeat'
-export const TEST_REPEAT_PARAM = 'test-repeat'
-// Chain progress lives in its own key: the service writes it while the page may be writing the event log
-const BUZZ_CHAIN_KEY = 'smart_wake_buzz_chain'
 
-export function readBuzzChain(localStorage) {
-  try {
-    const raw = localStorage.getItem(BUZZ_CHAIN_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch (e) {
-    return null
-  }
+// "ring-repeat:7" -> { kind: 'ring', count: 7 }; null for any other param
+export function parseChainParam(param) {
+  const match = /^(ring|test)-repeat:([0-9]+)$/.exec(String(param))
+  return match ? { kind: match[1], count: Number(match[2]) } : null
 }
 
-// Records one buzz and, unless the chain is done, sets the alarm for the next one
-export function continueBuzzChain(localStorage, kind, count, max) {
-  const previous = count > 1 ? readBuzzChain(localStorage) : null
-  const startMs = previous && previous.startMs ? previous.startMs : Date.now()
-  const chain = { kind, count, startMs, lastMs: Date.now(), max, alarmId: null, ended: count >= max, linkStarts: previous && previous.linkStarts ? previous.linkStarts : 1 }
-  if (!chain.ended) {
-    const timeSec = Math.floor(Date.now() / 1000) + BUZZ_INTERVAL_SEC
-    chain.alarmId = zosAlarm.set({
-      url: SERVICE_URL,
-      time: timeSec,
-      store: true,
-      param: kind === 'ring' ? RING_REPEAT_PARAM : TEST_REPEAT_PARAM
-    })
-  }
-  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
-  return chain
+// Sets the alarm for buzz number `count` of a chain. Writes nothing to storage.
+export function scheduleBuzzLink(kind, count) {
+  return zosAlarm.set({
+    url: SERVICE_URL,
+    time: Math.floor(Date.now() / 1000) + BUZZ_INTERVAL_SEC,
+    store: true,
+    param: `${kind}-repeat:${count}`
+  })
 }
 
-// Called first thing in each chain link, before buzzing, so a link that starts but then fails still shows
-export function markBuzzLinkStarted(localStorage) {
-  const chain = readBuzzChain(localStorage)
-  if (!chain) return
-  chain.linkStarts = (chain.linkStarts || 1) + 1
-  chain.lastLinkStartMs = Date.now()
-  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
-}
-
-export function recordBuzzChainError(localStorage, message) {
-  const chain = readBuzzChain(localStorage) || {}
-  chain.lastError = message
-  chain.ended = true
-  chain.endReason = 'error'
-  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
-}
-
+// Chain alarm IDs aren't stored, so cancel every pending alarm of this app except the wake alarm
 export function endBuzzChain(localStorage, reason) {
-  const chain = readBuzzChain(localStorage)
-  if (!chain || chain.ended) return
-  if (chain.alarmId) {
-    try {
-      zosAlarm.cancel(Number(chain.alarmId))
-    } catch (e) {
-      trace(`cancel buzz alarm failed: ${e && e.message ? e.message : e}`)
-    }
+  const keepId = Number(localStorage.getItem('smart_wake_alarm_id'))
+  const pending = getPendingAlarmIds()
+  if (pending === null) {
+    trace(`endBuzzChain(${reason}): pending alarms unavailable; ring links will still stop on their own`)
+    return
   }
-  chain.ended = true
-  chain.endReason = reason
-  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
+  const cancelled = []
+  pending.forEach(id => {
+    if (id === keepId) return
+    try {
+      zosAlarm.cancel(id)
+      cancelled.push(id)
+    } catch (e) {
+      trace(`cancel chain alarm ${id} failed: ${e && e.message ? e.message : e}`)
+    }
+  })
+  if (cancelled.length) logEvent(localStorage, `buzz chain ended (${reason}): cancelled alarms ${JSON.stringify(cancelled)}`)
 }
 
 export function placeServiceTestAlarm(localStorage, minutesAhead) {
