@@ -48,6 +48,58 @@ export function placeAlarm(localStorage, timeMs, reason) {
 }
 
 // Trial: an alarm that starts the background service instead of the page (does not touch the wake alarm)
+// --- Buzz chain ---
+// The service is stopped as soon as onInit returns (even with the watch's background setting on), so it
+// buzzes only once per start. A ring is therefore a chain of short alarms, each starting the service
+// for one buzz and setting the next, until Snooze/Dismiss or the limit.
+export const BUZZ_INTERVAL_SEC = 15
+export const RING_BUZZ_MAX = 20
+export const TEST_BUZZ_MAX = 5
+export const RING_REPEAT_PARAM = 'ring-repeat'
+export const TEST_REPEAT_PARAM = 'test-repeat'
+// Chain progress lives in its own key: the service writes it while the page may be writing the event log
+const BUZZ_CHAIN_KEY = 'smart_wake_buzz_chain'
+
+export function readBuzzChain(localStorage) {
+  try {
+    const raw = localStorage.getItem(BUZZ_CHAIN_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch (e) {
+    return null
+  }
+}
+
+// Records one buzz and, unless the chain is done, sets the alarm for the next one
+export function continueBuzzChain(localStorage, kind, count, max) {
+  const chain = { kind, count, lastMs: Date.now(), max, alarmId: null, ended: count >= max }
+  if (!chain.ended) {
+    const timeSec = Math.floor(Date.now() / 1000) + BUZZ_INTERVAL_SEC
+    chain.alarmId = zosAlarm.set({
+      url: SERVICE_URL,
+      time: timeSec,
+      store: true,
+      param: kind === 'ring' ? RING_REPEAT_PARAM : TEST_REPEAT_PARAM
+    })
+  }
+  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
+  return chain
+}
+
+export function endBuzzChain(localStorage, reason) {
+  const chain = readBuzzChain(localStorage)
+  if (!chain || chain.ended) return
+  if (chain.alarmId) {
+    try {
+      zosAlarm.cancel(Number(chain.alarmId))
+    } catch (e) {
+      trace(`cancel buzz alarm failed: ${e && e.message ? e.message : e}`)
+    }
+  }
+  chain.ended = true
+  chain.endReason = reason
+  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
+}
+
 export function placeServiceTestAlarm(localStorage, minutesAhead) {
   const oldId = Number(localStorage.getItem('smart_wake_test_alarm_id'))
   if (oldId) {
@@ -159,8 +211,9 @@ export function snoozeAlarm(localStorage) {
     cancelExistingAlarm(localStorage)
 
     const alarmId = placeAlarm(localStorage, snoozeUntilMs, 'snooze')
-    // Clearing the pending ring also stops the App's vibration loop
+    // Clearing the pending ring also stops any buzz alarm that still fires
     localStorage.removeItem('smart_wake_rang_at_ms')
+    endBuzzChain(localStorage, 'snooze')
 
     trace(`Snoozed -> Next Check: ${formatDateTime(new Date(snoozeUntilMs))} (Alarm ID: ${alarmId}), Hard Limit: ${formatDateTime(new Date(newHardLimitMs))}`)
     logEvent(localStorage, `snoozed until ${formatTimeOfDay(snoozeUntilMs)}, hard limit ${formatTimeOfDay(newHardLimitMs)} (alarm id ${alarmId})`)

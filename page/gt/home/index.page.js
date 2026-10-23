@@ -5,7 +5,7 @@ import * as sensor from '@zos/sensor'
 import * as display from '@zos/display'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, formatDateTime, dumpEventLog } from '../../../utils/index'
-import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm } from '../../../utils/alarm'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm, readBuzzChain, endBuzzChain } from '../../../utils/alarm'
 
 const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -96,11 +96,10 @@ Page({
     const firstScreen = this.isRingActive() ? 'ring' : 'main'
     logEvent(localStorage, `page opened on ${firstScreen} screen`)
     checkPendingAlarm(localStorage, 'page open')
-    // How far the background service's buzz loop got last time ("count@epoch-ms", "stopped" if it ended cleanly)
-    const servicePulses = localStorage.getItem('smart_wake_service_pulses')
-    if (servicePulses) {
-      const [count, rest] = String(servicePulses).split('@')
-      logEvent(localStorage, `last service buzz loop: ${count} pulses, last at ${formatDateTime(Number(rest.split(' ')[0]))}${rest.includes('stopped') ? ' (stopped cleanly)' : ' (cut off)'}`)
+    // How far the last buzz chain got (each buzz is a separate alarm-started service run)
+    const chain = readBuzzChain(localStorage)
+    if (chain) {
+      logEvent(localStorage, `last buzz chain (${chain.kind}): ${chain.count}/${chain.max} buzzes, last at ${formatDateTime(chain.lastMs)}, ${chain.ended ? `ended${chain.endReason ? ` (${chain.endReason})` : ''}` : `next alarm ${chain.alarmId}`}`)
     }
     // Print the stored history (including this open's entries) for the phone's log viewer
     this.state.stopLogDump = dumpEventLog(localStorage)
@@ -502,6 +501,7 @@ Page({
       this.stopRingVibration('dismiss')
       // A dismissed ring can no longer be snoozed
       localStorage.removeItem('smart_wake_rang_at_ms')
+      endBuzzChain(localStorage, 'dismiss')
 
       // EXPLICIT CHECK: If alarm is actively enabled, ensure tomorrow's alarm is locked in
       if (this.state.enabled) {
@@ -554,6 +554,7 @@ Page({
       localStorage.removeItem('smart_wake_snooze_until_ms')
       localStorage.removeItem('smart_wake_rang_at_ms')
       localStorage.removeItem('smart_wake_rang_hard_limit_ms')
+      endBuzzChain(localStorage, 'alarm turned off')
     }
 
     this.updateStatusDisplay()

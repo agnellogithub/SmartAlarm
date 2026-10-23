@@ -2,21 +2,20 @@ import * as sensor from '@zos/sensor'
 import * as notification from '@zos/notification'
 import * as router from '@zos/router'
 import { storage, logEvent, trace } from '../utils/index'
-import { ALARM_PAGE_URL, isRingPending } from '../utils/alarm'
+import {
+  ALARM_PAGE_URL, isRingPending, continueBuzzChain, readBuzzChain,
+  RING_BUZZ_MAX, TEST_BUZZ_MAX, RING_REPEAT_PARAM, TEST_REPEAT_PARAM
+} from '../utils/alarm'
 import { runWakeCheck } from '../utils/wakecheck'
 
 // Every wake alarm starts this service. It runs one wake check silently and, when it is time to wake,
-// buzzes, posts a notification and opens the ring screen.
-// On device (background setting Off) the service was stopped as soon as onInit returned and the ring
-// screen's timer did not run with the display off (1 pulse in 15 s), so nobody felt the 10-23 ring.
-// The service now also tries to keep buzzing with a timer; a pulse counter in its own storage key
-// (not the event log, which the page writes too) shows whether it stayed alive.
+// buzzes, posts a notification, opens the ring screen and starts a buzz chain.
+// On device the service is stopped as soon as onInit returns, even with the watch's background setting
+// on (10-23 test: 1 of 10 timer pulses), and the ring screen's timers don't run with the display off.
+// So each buzz is its own alarm-started run: see the buzz chain in utils/alarm.js.
 
 const localStorage = storage
 const APP_ID = 1131497
-const PULSE_INTERVAL_MS = 3000
-const PULSE_MAX = 100
-const SERVICE_PULSES_KEY = 'smart_wake_service_pulses'
 
 function errText(e) {
   return e && e.message ? e.message : String(e)
@@ -33,7 +32,7 @@ function attempt(label, fn) {
   }
 }
 
-// One strong buzz; the ring screen takes over with a repeating pattern once it opens
+// One strong buzz
 function buzz() {
   const vibrator = new sensor.Vibrator()
   const scene = sensor.VIBRATOR_SCENE_STRONG_REMINDER
@@ -41,27 +40,7 @@ function buzz() {
   vibrator.start()
 }
 
-// Keeps buzzing every PULSE_INTERVAL_MS while keepGoing() holds, recording progress as "count@time"
-function startPulses(keepGoing) {
-  let count = 1
-  localStorage.setItem(SERVICE_PULSES_KEY, `${count}@${Date.now()}`)
-  const timer = setInterval(() => {
-    if (count >= PULSE_MAX || !keepGoing()) {
-      clearInterval(timer)
-      localStorage.setItem(SERVICE_PULSES_KEY, `${count}@${Date.now()} stopped`)
-      return
-    }
-    try {
-      buzz()
-    } catch (e) {
-      trace(`pulse buzz threw: ${errText(e)}`)
-    }
-    count++
-    localStorage.setItem(SERVICE_PULSES_KEY, `${count}@${Date.now()}`)
-  }, PULSE_INTERVAL_MS)
-}
-
-// Opens the page. Must be the last log write: the page logs as soon as it opens,
+// Opens the page. Must be the last event-log write: the page logs as soon as it opens,
 // and two processes writing the log at once can lose entries.
 function openPage(params) {
   if (typeof router.launchApp !== 'function') {
@@ -84,12 +63,31 @@ function ring(reason) {
     content: `Time to wake up (${reason}). Tap Open to snooze or dismiss.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
+  attempt('buzz chain start', () => continueBuzzChain(localStorage, 'ring', 1, RING_BUZZ_MAX).alarmId)
   openPage('ring')
-  // Until Snooze/Dismiss clears the ring
-  startPulses(() => isRingPending(localStorage))
 }
 
-// Trial path kept for the edit screen's "Service test" buttons
+// A later link in the chain: buzz once more and set the next link. Writes only the chain key,
+// never the event log, since the page may be open and logging at the same moment.
+function continueChain(kind, max, stillWanted) {
+  const chain = readBuzzChain(localStorage)
+  if (!chain || chain.ended || chain.kind !== kind) {
+    trace(`buzz chain (${kind}) already ended`)
+    return
+  }
+  if (!stillWanted()) {
+    localStorage.setItem('smart_wake_buzz_chain', JSON.stringify(Object.assign({}, chain, { ended: true, endReason: 'ring cleared' })))
+    return
+  }
+  try {
+    buzz()
+  } catch (e) {
+    trace(`chain buzz threw: ${errText(e)}`)
+  }
+  continueBuzzChain(localStorage, kind, chain.count + 1, max)
+}
+
+// Trial path for the edit screen's "Service test" buttons: a short chain, no page launch
 function runServiceTest() {
   const dueMs = Number(localStorage.getItem('smart_wake_test_due_ms'))
   const lateSec = dueMs ? Math.round((Date.now() - dueMs) / 1000) : 'n/a'
@@ -97,20 +95,22 @@ function runServiceTest() {
   attempt('buzz', buzz)
   attempt('notify', () => notification.notify({
     title: 'Smart Wake test',
-    content: 'Background service ran. Tap to open.',
+    content: `Background service ran. Expect ${TEST_BUZZ_MAX} buzzes, 15 s apart.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
-  // No page launch here: the test only asks whether the service survives to keep buzzing (30 s)
-  logEvent(localStorage, 'service test: buzzing every 3 s for 30 s')
-  const endMs = Date.now() + 30 * 1000
-  startPulses(() => Date.now() < endMs)
+  attempt('buzz chain start', () => continueBuzzChain(localStorage, 'test', 1, TEST_BUZZ_MAX).alarmId)
 }
 
 AppService({
   onInit(params) {
     trace(`ENTER: AppService.onInit() | params: ${JSON.stringify(params)}`)
-    if (String(params) === 'service-test') {
+    const param = String(params)
+    if (param === 'service-test') {
       runServiceTest()
+    } else if (param === TEST_REPEAT_PARAM) {
+      continueChain('test', TEST_BUZZ_MAX, () => true)
+    } else if (param === RING_REPEAT_PARAM) {
+      continueChain('ring', RING_BUZZ_MAX, () => isRingPending(localStorage))
     } else {
       const result = runWakeCheck(localStorage)
       if (result.ring) ring(result.reason)
