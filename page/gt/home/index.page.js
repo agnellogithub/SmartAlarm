@@ -101,7 +101,7 @@ Page({
     if (chain) {
       // Average gap shows how closely the watch actually fires back-to-back alarms
       const avgGapSec = chain.count > 1 && chain.startMs ? ((chain.lastMs - chain.startMs) / 1000 / (chain.count - 1)).toFixed(1) : 'n/a'
-      logEvent(localStorage, `last buzz chain (${chain.kind}): ${chain.count}/${chain.max} buzzes, avg gap ${avgGapSec}s, last at ${formatDateTime(chain.lastMs)}, ${chain.ended ? `ended${chain.endReason ? ` (${chain.endReason})` : ''}` : `next alarm ${chain.alarmId}`}`)
+      logEvent(localStorage, `last buzz chain (${chain.kind}): ${chain.count}/${chain.max} buzzes, avg gap ${avgGapSec}s, last at ${formatDateTime(chain.lastMs)}, ${chain.ended ? `ended${chain.endReason ? ` (${chain.endReason})` : ''}` : `next alarm ${chain.alarmId}`}, link starts ${chain.linkStarts || 1}${chain.lastLinkStartMs ? ` (last ${formatDateTime(chain.lastLinkStartMs)})` : ''}${chain.lastError ? `, error: ${chain.lastError}` : ''}`)
     }
     // Print the stored history (including this open's entries) for the phone's log viewer
     this.state.stopLogDump = dumpEventLog(localStorage)

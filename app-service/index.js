@@ -3,7 +3,7 @@ import * as notification from '@zos/notification'
 import * as router from '@zos/router'
 import { storage, logEvent, trace } from '../utils/index'
 import {
-  ALARM_PAGE_URL, isRingPending, continueBuzzChain, readBuzzChain,
+  ALARM_PAGE_URL, isRingPending, continueBuzzChain, readBuzzChain, markBuzzLinkStarted, recordBuzzChainError,
   RING_BUZZ_MAX, TEST_BUZZ_MAX, RING_REPEAT_PARAM, TEST_REPEAT_PARAM, BUZZ_INTERVAL_SEC
 } from '../utils/alarm'
 import { runWakeCheck } from '../utils/wakecheck'
@@ -70,6 +70,7 @@ function ring(reason) {
 // A later link in the chain: buzz once more and set the next link. Writes only the chain key,
 // never the event log, since the page may be open and logging at the same moment.
 function continueChain(kind, max, stillWanted) {
+  markBuzzLinkStarted(localStorage)
   const chain = readBuzzChain(localStorage)
   if (!chain || chain.ended || chain.kind !== kind) {
     trace(`buzz chain (${kind}) already ended`)
@@ -84,7 +85,11 @@ function continueChain(kind, max, stillWanted) {
   } catch (e) {
     trace(`chain buzz threw: ${errText(e)}`)
   }
-  continueBuzzChain(localStorage, kind, chain.count + 1, max)
+  try {
+    continueBuzzChain(localStorage, kind, chain.count + 1, max)
+  } catch (e) {
+    recordBuzzChainError(localStorage, `next link: ${errText(e)}`)
+  }
 }
 
 // Trial path for the edit screen's "Service test" buttons: a short chain, no page launch

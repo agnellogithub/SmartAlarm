@@ -52,11 +52,12 @@ export function placeAlarm(localStorage, timeMs, reason) {
 // The service is stopped as soon as onInit returns (even with the watch's background setting on), so it
 // buzzes only once per start. A ring is therefore a chain of short alarms, each starting the service
 // for one buzz and setting the next, until Snooze/Dismiss or the limit.
-// Untested how closely the watch fires alarms; the chain records its start so the real average gap shows
-export const BUZZ_INTERVAL_SEC = 3
+// A 3 s gap stopped the chain after the first buzz (10-23 12:00: the second alarm vanished without running).
+// One "strong reminder" buzz itself lasts several seconds, so 10 s still feels close to continuous.
+export const BUZZ_INTERVAL_SEC = 10
 // 5 min of buzzing
-export const RING_BUZZ_MAX = 100
-export const TEST_BUZZ_MAX = 10
+export const RING_BUZZ_MAX = 30
+export const TEST_BUZZ_MAX = 5
 export const RING_REPEAT_PARAM = 'ring-repeat'
 export const TEST_REPEAT_PARAM = 'test-repeat'
 // Chain progress lives in its own key: the service writes it while the page may be writing the event log
@@ -75,7 +76,7 @@ export function readBuzzChain(localStorage) {
 export function continueBuzzChain(localStorage, kind, count, max) {
   const previous = count > 1 ? readBuzzChain(localStorage) : null
   const startMs = previous && previous.startMs ? previous.startMs : Date.now()
-  const chain = { kind, count, startMs, lastMs: Date.now(), max, alarmId: null, ended: count >= max }
+  const chain = { kind, count, startMs, lastMs: Date.now(), max, alarmId: null, ended: count >= max, linkStarts: previous && previous.linkStarts ? previous.linkStarts : 1 }
   if (!chain.ended) {
     const timeSec = Math.floor(Date.now() / 1000) + BUZZ_INTERVAL_SEC
     chain.alarmId = zosAlarm.set({
@@ -87,6 +88,23 @@ export function continueBuzzChain(localStorage, kind, count, max) {
   }
   localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
   return chain
+}
+
+// Called first thing in each chain link, before buzzing, so a link that starts but then fails still shows
+export function markBuzzLinkStarted(localStorage) {
+  const chain = readBuzzChain(localStorage)
+  if (!chain) return
+  chain.linkStarts = (chain.linkStarts || 1) + 1
+  chain.lastLinkStartMs = Date.now()
+  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
+}
+
+export function recordBuzzChainError(localStorage, message) {
+  const chain = readBuzzChain(localStorage) || {}
+  chain.lastError = message
+  chain.ended = true
+  chain.endReason = 'error'
+  localStorage.setItem(BUZZ_CHAIN_KEY, JSON.stringify(chain))
 }
 
 export function endBuzzChain(localStorage, reason) {
