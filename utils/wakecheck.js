@@ -52,9 +52,11 @@ function readSleepStage(localStorage, nowMs) {
   try {
     const sleep = new Sleep()
     sleep.updateInfo()
+    probeLiveSignals(localStorage, sleep)
+    // Read stages after the probe: on 10-23 06:45 the first getStage() right after updateInfo() returned
+    // a record ending 06:24 while the probe's later read already had one ending 06:42
     const stages = sleep.getStage()
     const constants = sleep.getStageConstantObj()
-    probeLiveSignals(localStorage, sleep)
 
     if (!stages || !Array.isArray(stages) || stages.length === 0) {
       // No live data: keep checking; the hard limit still guarantees the wake-up

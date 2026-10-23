@@ -96,6 +96,12 @@ Page({
     const firstScreen = this.isRingActive() ? 'ring' : 'main'
     logEvent(localStorage, `page opened on ${firstScreen} screen`)
     checkPendingAlarm(localStorage, 'page open')
+    // How far the background service's buzz loop got last time ("count@epoch-ms", "stopped" if it ended cleanly)
+    const servicePulses = localStorage.getItem('smart_wake_service_pulses')
+    if (servicePulses) {
+      const [count, rest] = String(servicePulses).split('@')
+      logEvent(localStorage, `last service buzz loop: ${count} pulses, last at ${formatDateTime(Number(rest.split(' ')[0]))}${rest.includes('stopped') ? ' (stopped cleanly)' : ' (cut off)'}`)
+    }
     // Print the stored history (including this open's entries) for the phone's log viewer
     this.state.stopLogDump = dumpEventLog(localStorage)
     this.showScreen(firstScreen)
