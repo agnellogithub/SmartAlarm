@@ -5,7 +5,7 @@ import * as sensor from '@zos/sensor'
 import * as display from '@zos/display'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, formatDateTime, dumpEventLog } from '../../../utils/index'
-import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm, endBuzzChain } from '../../../utils/alarm'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm, endBuzzChain, scheduleBuzzLink } from '../../../utils/alarm'
 
 const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -105,6 +105,17 @@ Page({
   onDestroy() {
     console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ENTER: Page.onDestroy()`)
     logEvent(localStorage, `page closed (was on ${this.state.screen} screen)`)
+    // Chain alarms due while the page is open don't fire and stay stuck (10-23 13:00), so if the ring is
+    // still unanswered, clear them and restart the chain as the page goes away
+    if (isRingPending(localStorage)) {
+      try {
+        endBuzzChain(localStorage, 'page closed, restarting')
+        const alarmId = scheduleBuzzLink('ring', 2)
+        logEvent(localStorage, `ring still pending: buzz chain restarted (alarm ${alarmId})`)
+      } catch (e) {
+        logEvent(localStorage, `buzz chain restart failed: ${e && e.message ? e.message : e}`)
+      }
+    }
     this.stopRingClock()
     this.stopRingVibration('page closed')
     if (this.state.stopLogDump) this.state.stopLogDump()

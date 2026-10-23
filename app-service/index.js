@@ -9,7 +9,7 @@ import {
 import { runWakeCheck } from '../utils/wakecheck'
 
 // Every wake alarm starts this service. It runs one wake check silently and, when it is time to wake,
-// buzzes, posts a notification, opens the ring screen and starts a buzz chain.
+// buzzes, posts a notification and starts a buzz chain (the notification opens the ring screen).
 // On device the service is stopped as soon as onInit returns, even with the watch's background setting
 // on (10-23 test: 1 of 10 timer pulses), and the ring screen's timers don't run with the display off.
 // So each buzz is its own alarm-started run: see the buzz chain in utils/alarm.js.
@@ -64,7 +64,8 @@ function ring(reason) {
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
   attempt('buzz chain start', () => scheduleBuzzLink('ring', 2))
-  openPage('ring')
+  // No launchApp here: on 10-23 13:00 the opened ring screen kept the next link's alarm from ever firing
+  // (still pending at 13:18). The notification's Open action brings up Snooze/Dismiss instead.
 }
 
 // A later link in the chain: buzz once more and set the next link.

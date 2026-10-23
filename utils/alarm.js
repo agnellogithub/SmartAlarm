@@ -57,8 +57,8 @@ export function placeAlarm(localStorage, timeMs, reason) {
 // each link's number travels in the alarm param ("ring-repeat:7"), and only console traces record progress.
 // One "strong reminder" buzz itself lasts several seconds, so 10 s still feels close to continuous.
 export const BUZZ_INTERVAL_SEC = 10
-// 5 min of buzzing
-export const RING_BUZZ_MAX = 30
+// 10 min of buzzing
+export const RING_BUZZ_MAX = 60
 export const TEST_BUZZ_MAX = 5
 
 // "ring-repeat:7" -> { kind: 'ring', count: 7 }; null for any other param
