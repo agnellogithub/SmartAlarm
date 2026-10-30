@@ -76,6 +76,7 @@ Page({
     ringVibrator: null,
     ringVibrationTimer: null,
     ringPulses: 0,
+    screenHeld: false,
     ringStartedMs: 0,
     stopLogDump: null
   },
@@ -355,6 +356,10 @@ Page({
     } else {
       this.stopRingClock()
       this.stopRingVibration('left ring screen')
+      if (this.state.screenHeld) {
+        this.releaseScreen()
+        this.state.screenHeld = false
+      }
     }
 
     if (screen === 'edit') this.updateEditDisplay()
@@ -387,6 +392,7 @@ Page({
   startRingVibration() {
     if (this.state.ringVibrationTimer) return
     this.keepScreenOn()
+    this.state.screenHeld = true
     try {
       const vibrator = new sensor.Vibrator()
       const scene = sensor.VIBRATOR_SCENE_STRONG_REMINDER
@@ -428,13 +434,38 @@ Page({
   },
 
   // Keeps the display awake while ringing, where the watch supports it
+  // Keeps the display awake while ringing and brings the ring screen back on wrist raise, where supported.
+  // Logs which calls the watch offers, since the display went off mid-ring on 10-23.
   keepScreenOn() {
-    try {
-      if (typeof display.setPageBrightTime === 'function') display.setPageBrightTime({ brightTime: RING_VIBRATION_MAX_MS })
-      if (typeof display.pauseDropWristScreenOff === 'function') display.pauseDropWristScreenOff({ duration: RING_VIBRATION_MAX_MS })
-    } catch (e) {
-      console.log(`[SMART_WAKE_TRACE ${getLogTime()}] keepScreenOn exception:`, e)
+    const used = []
+    const call = (name, arg) => {
+      if (typeof display[name] !== 'function') return
+      try {
+        display[name](arg)
+        used.push(name)
+      } catch (e) {
+        used.push(`${name}=ERR(${e && e.message ? e.message : e})`)
+      }
     }
+    call('setPageBrightTime', { brightTime: RING_VIBRATION_MAX_MS })
+    call('pauseDropWristScreenOff', { duration: RING_VIBRATION_MAX_MS })
+    call('setWakeUpRelaunch', { relaunch: true })
+    logEvent(localStorage, `ring screen keep-on: ${used.length ? used.join(', ') : 'no display calls available'}`)
+  },
+
+  // Undoes keepScreenOn once the ring is answered
+  releaseScreen() {
+    const call = (name, arg) => {
+      if (typeof display[name] !== 'function') return
+      try {
+        display[name](arg)
+      } catch (e) {
+        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] ${name} exception:`, e)
+      }
+    }
+    call('setWakeUpRelaunch', { relaunch: false })
+    call('resetPageBrightTime')
+    call('resumeDropWristScreenOff')
   },
 
   loadSavedConfig() {

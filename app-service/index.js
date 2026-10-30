@@ -9,13 +9,22 @@ import {
 import { runWakeCheck } from '../utils/wakecheck'
 
 // Every wake alarm starts this service. It runs one wake check silently and, when it is time to wake,
-// buzzes, posts a notification and starts a buzz chain (the notification opens the ring screen).
+// posts a notification (wakes the display), starts a buzz chain, buzzes and opens the ring screen.
 // On device the service is stopped as soon as onInit returns, even with the watch's background setting
 // on (10-23 test: 1 of 10 timer pulses), and the ring screen's timers don't run with the display off.
 // So each buzz is its own alarm-started run: see the buzz chain in utils/alarm.js.
 
 const localStorage = storage
 const APP_ID = 1131497
+
+// Each start gives a burst instead of one pulse: the service is stopped once onInit returns, so a timer
+// can't repeat the buzz, but holding onInit and re-triggering the motor can. Bursts grow along the chain
+// (gentle first, stronger if unanswered); one pulse per link was reported too weak to wake from deep sleep.
+// Untested: whether the watch stops a service held this long.
+const BURST_FIRST_MS = 3000
+const BURST_STEP_MS = 500
+const BURST_MAX_MS = 7000
+const BURST_RETRIGGER_MS = 1200
 
 function errText(e) {
   return e && e.message ? e.message : String(e)
@@ -32,12 +41,31 @@ function attempt(label, fn) {
   }
 }
 
-// One strong buzz
-function buzz() {
+function strongVibrator() {
   const vibrator = new sensor.Vibrator()
   const scene = sensor.VIBRATOR_SCENE_STRONG_REMINDER
   if (scene !== undefined && typeof vibrator.setMode === 'function') vibrator.setMode(scene)
-  vibrator.start()
+  return vibrator
+}
+
+function burstMsForLink(count) {
+  return Math.min(BURST_MAX_MS, BURST_FIRST_MS + (count - 1) * BURST_STEP_MS)
+}
+
+// Buzzes for ms by holding onInit and re-triggering the motor; returns the number of motor starts
+function burst(ms) {
+  const vibrator = strongVibrator()
+  const endMs = Date.now() + ms
+  let nextMs = 0
+  let starts = 0
+  while (Date.now() < endMs) {
+    if (Date.now() >= nextMs) {
+      vibrator.start()
+      starts++
+      nextMs = Date.now() + BURST_RETRIGGER_MS
+    }
+  }
+  return starts
 }
 
 // Opens the page. Must be the last event-log write: the page logs as soon as it opens,
@@ -57,15 +85,18 @@ function openPage(params) {
 }
 
 function ring(reason) {
-  attempt('buzz', buzz)
+  // The notification wakes the display (launchApp alone didn't); its Open action is the fallback
   attempt('notify', () => notification.notify({
     title: 'Smart Wake',
     content: `Time to wake up (${reason}). Tap Open to snooze or dismiss.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
   attempt('buzz chain start', () => scheduleBuzzLink('ring', 2))
-  // No launchApp here: on 10-23 13:00 the opened ring screen kept the next link's alarm from ever firing
-  // (still pending at 13:18). The notification's Open action brings up Snooze/Dismiss instead.
+  const startedMs = Date.now()
+  attempt('burst', () => `${burst(burstMsForLink(1))} motor starts in ${Date.now() - startedMs} ms`)
+  // Straight to Snooze/Dismiss. While the page is open the chain's alarm doesn't fire (10-23 13:00), so the
+  // page vibrates itself while the display is on, and restarts the chain when it closes unanswered.
+  openPage('ring')
 }
 
 // A later link in the chain: buzz once more and set the next link.
@@ -76,35 +107,40 @@ function runChainLink({ kind, count }) {
     trace(`buzz chain (ring) link ${count}: ring cleared, stopping`)
     return
   }
-  try {
-    buzz()
-  } catch (e) {
-    trace(`chain buzz threw: ${errText(e)}`)
-  }
-  if (count >= max) {
+  // Next link first, so the burst doesn't delay it
+  if (count < max) {
+    try {
+      const alarmId = scheduleBuzzLink(kind, count + 1)
+      trace(`buzz chain (${kind}) link ${count}/${max}: next link alarm ${alarmId}`)
+    } catch (e) {
+      trace(`buzz chain (${kind}) link ${count}: scheduling next failed: ${errText(e)}`)
+    }
+  } else {
     trace(`buzz chain (${kind}) link ${count}/${max}: last one`)
-    return
   }
   try {
-    const alarmId = scheduleBuzzLink(kind, count + 1)
-    trace(`buzz chain (${kind}) link ${count}/${max}: next link alarm ${alarmId}`)
+    const ms = burstMsForLink(count)
+    trace(`buzz chain (${kind}) link ${count}: burst ${ms} ms, ${burst(ms)} motor starts`)
   } catch (e) {
-    trace(`buzz chain (${kind}) link ${count}: scheduling next failed: ${errText(e)}`)
+    trace(`chain burst threw: ${errText(e)}`)
   }
 }
 
-// Trial path for the edit screen's "Service test" buttons: a short chain, no page launch
+// Trial path for the edit screen's "Service test" buttons: the same steps as a real ring
+// (no ring is recorded, so the page shows its main screen and Snooze/Dismiss don't apply)
 function runServiceTest() {
   const dueMs = Number(localStorage.getItem('smart_wake_test_due_ms'))
   const lateSec = dueMs ? Math.round((Date.now() - dueMs) / 1000) : 'n/a'
   logEvent(localStorage, `service test started: ${lateSec}s late`)
-  attempt('buzz', buzz)
   attempt('notify', () => notification.notify({
     title: 'Smart Wake test',
-    content: `Background service ran. Expect ${TEST_BUZZ_MAX} buzzes, ${BUZZ_INTERVAL_SEC} s apart.`,
+    content: `Expect ${TEST_BUZZ_MAX} bursts, ${BUZZ_INTERVAL_SEC} s apart, getting longer.`,
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
   attempt('buzz chain start', () => scheduleBuzzLink('test', 2))
+  const startedMs = Date.now()
+  attempt('burst', () => `${burst(burstMsForLink(1))} motor starts in ${Date.now() - startedMs} ms`)
+  openPage('from-service-test')
 }
 
 AppService({
