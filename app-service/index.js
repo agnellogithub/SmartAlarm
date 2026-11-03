@@ -3,7 +3,7 @@ import * as notification from '@zos/notification'
 import * as router from '@zos/router'
 import { storage, logEvent, trace } from '../utils/index'
 import {
-  ALARM_PAGE_URL, isRingPending, parseChainParam, scheduleBuzzLink,
+  ALARM_PAGE_URL, isRingPending, parseChainParam, scheduleBuzzLink, scheduleRingRestarts, RING_RESTART_PARAM,
   RING_BUZZ_MAX, TEST_BUZZ_MAX, BUZZ_INTERVAL_SEC
 } from '../utils/alarm'
 import { runWakeCheck } from '../utils/wakecheck'
@@ -20,10 +20,11 @@ const APP_ID = 1131497
 // Each start gives a burst instead of one pulse: the service is stopped once onInit returns, so a timer
 // can't repeat the buzz, but holding onInit and re-triggering the motor can. Bursts grow along the chain
 // (gentle first, stronger if unanswered); one pulse per link was reported too weak to wake from deep sleep.
-// Untested: whether the watch stops a service held this long.
+// 3 s is proven on device (11-03: 3 motor starts in 3002 ms); longer is unproven and the chain died after
+// 2-3 buzzes that morning, so growth is capped close to it.
 const BURST_FIRST_MS = 3000
 const BURST_STEP_MS = 500
-const BURST_MAX_MS = 7000
+const BURST_MAX_MS = 4000
 const BURST_RETRIGGER_MS = 1200
 
 function errText(e) {
@@ -92,6 +93,7 @@ function ring(reason) {
     actions: [{ text: 'Open', file: ALARM_PAGE_URL }]
   }))
   attempt('buzz chain start', () => scheduleBuzzLink('ring', 2))
+  attempt('backup restarts', () => scheduleRingRestarts())
   const startedMs = Date.now()
   attempt('burst', () => `${burst(burstMsForLink(1))} motor starts in ${Date.now() - startedMs} ms`)
   // Straight to Snooze/Dismiss. While the page is open the chain's alarm doesn't fire (10-23 13:00), so the
@@ -150,6 +152,9 @@ AppService({
     const chainLink = parseChainParam(param)
     if (chainLink) {
       runChainLink(chainLink)
+    } else if (param === RING_RESTART_PARAM) {
+      // A fresh chain from link 1, if the ring is still unanswered (runChainLink checks)
+      runChainLink({ kind: 'ring', count: 1 })
     } else if (param === 'service-test') {
       runServiceTest()
     } else {

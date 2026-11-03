@@ -5,7 +5,7 @@ import * as sensor from '@zos/sensor'
 import * as display from '@zos/display'
 import { getDeviceInfo } from '@zos/device'
 import { getNextWakeWindow, readWindowMin, DEFAULT_WINDOW_MIN, MIN_WINDOW_MIN, MAX_WINDOW_MIN, readSnoozeMin, DEFAULT_SNOOZE_MIN, MIN_SNOOZE_MIN, MAX_SNOOZE_MIN, readCheckMin, DEFAULT_CHECK_MIN, MIN_CHECK_MIN, MAX_CHECK_MIN, storage, logEvent, formatDateTime, dumpEventLog } from '../../../utils/index'
-import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, placeServiceTestAlarm, endBuzzChain, scheduleBuzzLink } from '../../../utils/alarm'
+import { scheduleNextDayAlarm, snoozeAlarm, isRingPending, placeAlarm, checkPendingAlarm, endBuzzChain, scheduleBuzzLink } from '../../../utils/alarm'
 
 const localStorage = storage
 const { width: DEVICE_WIDTH, height: DEVICE_HEIGHT } = getDeviceInfo()
@@ -287,25 +287,8 @@ Page({
         this.saveTimeAndReturn()
       }
     })
-    // Trial: background-service test alarms
-    y += 84
-    label(y, 'Service test')
-    y += 34
-    const testButton = (x, minutes) => container.createWidget(widget.BUTTON, {
-      x, y, w: 130, h: 52, radius: 26,
-      normal_color: COLOR_GREY, press_color: COLOR_GREY_PRESS,
-      text: `+${minutes} min`, text_size: 22,
-      click_func: () => {
-        console.log(`[SMART_WAKE_TRACE ${getLogTime()}] EVENT: Service test +${minutes} min clicked.`)
-        const dueMs = placeServiceTestAlarm(localStorage, minutes)
-        showToast({ text: `Service test at ${formatClock(dueMs)}` })
-      }
-    })
-    testButton(CX - 140, 2)
-    testButton(CX + 10, 60)
-
     // Bottom spacer so the last row can scroll clear of a round screen's edge
-    container.createWidget(widget.FILL_RECT, { x: 0, y: y + 52, w: DEVICE_WIDTH, h: 70, color: 0x000000 })
+    container.createWidget(widget.FILL_RECT, { x: 0, y: y + 56, w: DEVICE_WIDTH, h: 70, color: 0x000000 })
 
     this.state.editGroup = [container]
   },

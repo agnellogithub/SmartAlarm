@@ -77,6 +77,21 @@ export function scheduleBuzzLink(kind, count) {
   })
 }
 
+// Backup restarts: if one link's alarm is missed the chain ends, so the ring also sets these. Each one,
+// if the ring is still unanswered, starts a fresh chain (11-03: the chain died after 2-3 buzzes).
+export const RING_RESTART_PARAM = 'ring-restart'
+export const RING_RESTART_OFFSETS_SEC = [60, 150, 300, 480]
+
+export function scheduleRingRestarts() {
+  const nowSec = Math.floor(Date.now() / 1000)
+  return RING_RESTART_OFFSETS_SEC.map(offset => zosAlarm.set({
+    url: SERVICE_URL,
+    time: nowSec + offset,
+    store: true,
+    param: RING_RESTART_PARAM
+  }))
+}
+
 // Chain alarm IDs aren't stored, so cancel every pending alarm of this app except the wake alarm
 export function endBuzzChain(localStorage, reason) {
   const keepId = Number(localStorage.getItem('smart_wake_alarm_id'))
